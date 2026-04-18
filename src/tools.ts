@@ -14,11 +14,12 @@ import {
   upsertCheckIn,
 } from "./db/check-ins.js";
 import { deleteDayComment, getDay, setDayComment } from "./db/days.js";
+import { isIsoDate } from "./util/date.js";
 import { ToolError } from "./util/errors.js";
 
 const DateStr = z
   .string()
-  .regex(/^\d{4}-\d{2}-\d{2}$/, "must be ISO date YYYY-MM-DD");
+  .refine(isIsoDate, { message: "must be ISO date YYYY-MM-DD" });
 
 function ok(data: unknown) {
   return {

@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
@@ -50,7 +50,10 @@ describe("mcp tools", () => {
     const conn = await connect();
     client = conn.client;
     close = conn.close;
-    return async () => close();
+  });
+
+  afterEach(async () => {
+    await close();
   });
 
   it("lists registered tools", async () => {

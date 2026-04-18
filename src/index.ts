@@ -10,8 +10,7 @@ const mcpApiHandler = {
     env: Env,
     ctx: ExecutionContext,
   ): Promise<Response> {
-    const server = buildMcpServer(env.DB);
-    const handler = createMcpHandler(server, { route: "/mcp" });
+    const handler = createMcpHandler(buildMcpServer(env.DB), { route: "/mcp" });
     return handler(request, env, ctx);
   },
 };

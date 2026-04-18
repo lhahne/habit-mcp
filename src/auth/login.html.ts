@@ -1,7 +1,7 @@
 export interface LoginPageOptions {
   actionUrl: string;
-  clientName?: string | undefined;
-  error?: string | undefined;
+  clientName?: string;
+  error?: string;
 }
 
 const escape = (s: string): string =>

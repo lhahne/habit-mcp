@@ -1,6 +1,3 @@
--- Enable foreign key enforcement per connection.
-PRAGMA foreign_keys = ON;
-
 CREATE TABLE habits (
   id           INTEGER PRIMARY KEY AUTOINCREMENT,
   name         TEXT    NOT NULL,

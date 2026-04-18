@@ -1,10 +1,13 @@
 import { renderLoginPage } from "./login.html.js";
 
-function timingSafeEqual(a: string, b: string): boolean {
+async function timingSafeEqual(a: string, b: string): Promise<boolean> {
   const enc = new TextEncoder();
-  const aa = enc.encode(a);
-  const bb = enc.encode(b);
-  if (aa.length !== bb.length) return false;
+  const [da, db] = await Promise.all([
+    crypto.subtle.digest("SHA-256", enc.encode(a)),
+    crypto.subtle.digest("SHA-256", enc.encode(b)),
+  ]);
+  const aa = new Uint8Array(da);
+  const bb = new Uint8Array(db);
   let diff = 0;
   for (let i = 0; i < aa.length; i += 1) diff |= aa[i]! ^ bb[i]!;
   return diff === 0;
@@ -60,7 +63,7 @@ export const authHandler = {
 
     const form = await request.formData();
     const submitted = String(form.get("password") ?? "");
-    if (!timingSafeEqual(submitted, env.AUTH_PASSWORD)) {
+    if (!(await timingSafeEqual(submitted, env.AUTH_PASSWORD))) {
       return new Response(
         renderLoginPage({
           actionUrl,

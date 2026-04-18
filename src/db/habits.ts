@@ -82,7 +82,7 @@ export async function createHabit(
       now,
     )
     .first<HabitRow>();
-  if (!res) throw new Error("failed to insert habit");
+  if (!res) throw new ToolError("failed to insert habit");
   return rowToHabit(res);
 }
 
