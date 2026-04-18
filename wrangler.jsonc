@@ -9,14 +9,14 @@
     {
       "binding": "DB",
       "database_name": "habit-mcp",
-      "database_id": "00000000-0000-0000-0000-000000000000",
+      "database_id": "f544cb02-a6b4-4bdd-8534-7c0e8ab60bba",
       "migrations_dir": "migrations"
     }
   ],
   "kv_namespaces": [
     {
       "binding": "OAUTH_KV",
-      "id": "00000000000000000000000000000000"
+      "id": "270516a3ae054d3582f3afa1cf0f80c2"
     }
   ],
   "vars": {
