@@ -105,6 +105,21 @@ describe("mcp tools", () => {
     expect(day.data.day.checkIns).toHaveLength(1);
     expect(day.data.day.checkIns[0]!.note).toBe("after dinner");
 
+    const days = await call<{
+      days: { date: string; comment: string; checkIns: { note: string | null }[] }[];
+    }>(client, "list_days", { from: "2026-04-01", to: "2026-04-30" });
+    expect(days.isError).toBe(false);
+    expect(days.data.days).toHaveLength(1);
+    expect(days.data.days[0]!.date).toBe("2026-04-10");
+    expect(days.data.days[0]!.comment).toBe("good day");
+    expect(days.data.days[0]!.checkIns[0]!.note).toBe("after dinner");
+
+    const badRange = await call(client, "list_days", {
+      from: "2026-04-30",
+      to: "2026-04-01",
+    });
+    expect(badRange.isError).toBe(true);
+
     const list = await call<{ habits: { id: number }[] }>(
       client,
       "list_habits",

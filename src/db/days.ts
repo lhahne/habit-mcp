@@ -35,6 +35,11 @@ export async function listDays(
 ): Promise<Day[]> {
   assertIsoDate(opts.from, "from");
   assertIsoDate(opts.to, "to");
+  if (opts.from > opts.to) {
+    throw new ToolError(
+      `invalid date range: from (${opts.from}) must be <= to (${opts.to})`,
+    );
+  }
 
   const [daysRes, ciRes] = await Promise.all([
     db
