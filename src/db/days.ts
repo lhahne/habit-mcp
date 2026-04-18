@@ -3,6 +3,11 @@ import { rowToCheckIn } from "./schema.js";
 import { assertIsoDate, nowIso } from "../util/date.js";
 import { ToolError } from "../util/errors.js";
 
+export interface ListDaysOptions {
+  from: string;
+  to: string;
+}
+
 export async function getDay(db: D1Database, date: string): Promise<Day> {
   assertIsoDate(date, "date");
   const [dayRow, ciRes] = await Promise.all([
@@ -22,6 +27,44 @@ export async function getDay(db: D1Database, date: string): Promise<Day> {
     comment: dayRow?.comment ?? "",
     checkIns: (ciRes.results ?? []).map(rowToCheckIn),
   };
+}
+
+export async function listDays(
+  db: D1Database,
+  opts: ListDaysOptions,
+): Promise<Day[]> {
+  assertIsoDate(opts.from, "from");
+  assertIsoDate(opts.to, "to");
+
+  const [daysRes, ciRes] = await Promise.all([
+    db
+      .prepare(`SELECT * FROM days WHERE date >= ?1 AND date <= ?2`)
+      .bind(opts.from, opts.to)
+      .all<DayRow>(),
+    db
+      .prepare(
+        `SELECT * FROM check_ins
+         WHERE date >= ?1 AND date <= ?2
+         ORDER BY date ASC, habit_id ASC`,
+      )
+      .bind(opts.from, opts.to)
+      .all<CheckInRow>(),
+  ]);
+
+  const byDate = new Map<string, Day>();
+  for (const row of daysRes.results ?? []) {
+    byDate.set(row.date, { date: row.date, comment: row.comment, checkIns: [] });
+  }
+  for (const row of ciRes.results ?? []) {
+    let day = byDate.get(row.date);
+    if (!day) {
+      day = { date: row.date, comment: "", checkIns: [] };
+      byDate.set(row.date, day);
+    }
+    day.checkIns.push(rowToCheckIn(row));
+  }
+
+  return [...byDate.values()].sort((a, b) => a.date.localeCompare(b.date));
 }
 
 export async function setDayComment(

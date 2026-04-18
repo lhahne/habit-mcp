@@ -80,10 +80,10 @@ redirect by entering the password, and the habit tools appear in chat.
 | `create_habit`       | Create a habit.                                    |
 | `update_habit`       | Patch habit fields.                                |
 | `delete_habit`       | Delete habit (cascades to check-ins).              |
-| `list_check_ins`     | List check-ins, filter by habit / date range.      |
 | `upsert_check_in`    | Create or update a check-in.                       |
 | `delete_check_in`    | Remove a check-in.                                 |
 | `get_day`            | Day comment plus joined check-ins for a date.      |
+| `list_days`          | Days in a range, each with comment + check-ins.    |
 | `set_day_comment`    | Create or update the comment for a date.           |
 | `delete_day_comment` | Remove the day comment.                            |
 | `record_day`         | Set the day comment and bulk-upsert check-ins.     |

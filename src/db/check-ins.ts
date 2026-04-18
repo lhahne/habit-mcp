@@ -10,50 +10,6 @@ export interface UpsertCheckInInput {
   note?: string | null;
 }
 
-export interface ListCheckInsOptions {
-  habitId?: number;
-  from?: string;
-  to?: string;
-}
-
-export async function listCheckIns(
-  db: D1Database,
-  opts: ListCheckInsOptions = {},
-): Promise<CheckIn[]> {
-  const clauses: string[] = [];
-  const params: Array<string | number> = [];
-  let n = 0;
-
-  if (opts.habitId !== undefined) {
-    n += 1;
-    clauses.push(`habit_id = ?${n}`);
-    params.push(opts.habitId);
-  }
-  if (opts.from !== undefined) {
-    assertIsoDate(opts.from, "from");
-    n += 1;
-    clauses.push(`date >= ?${n}`);
-    params.push(opts.from);
-  }
-  if (opts.to !== undefined) {
-    assertIsoDate(opts.to, "to");
-    n += 1;
-    clauses.push(`date <= ?${n}`);
-    params.push(opts.to);
-  }
-
-  const sql =
-    `SELECT * FROM check_ins` +
-    (clauses.length ? ` WHERE ${clauses.join(" AND ")}` : ``) +
-    ` ORDER BY date ASC, habit_id ASC`;
-
-  const res = await db
-    .prepare(sql)
-    .bind(...params)
-    .all<CheckInRow>();
-  return (res.results ?? []).map(rowToCheckIn);
-}
-
 export async function getCheckIn(
   db: D1Database,
   habitId: number,

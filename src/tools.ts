@@ -8,12 +8,13 @@ import {
   listHabits,
   updateHabit,
 } from "./db/habits.js";
+import { deleteCheckIn, upsertCheckIn } from "./db/check-ins.js";
 import {
-  deleteCheckIn,
-  listCheckIns,
-  upsertCheckIn,
-} from "./db/check-ins.js";
-import { deleteDayComment, getDay, setDayComment } from "./db/days.js";
+  deleteDayComment,
+  getDay,
+  listDays,
+  setDayComment,
+} from "./db/days.js";
 import { isIsoDate } from "./util/date.js";
 import { ToolError } from "./util/errors.js";
 
@@ -158,26 +159,18 @@ export function buildMcpServer(db: D1Database): McpServer {
   );
 
   server.registerTool(
-    "list_check_ins",
+    "list_days",
     {
-      title: "List check-ins",
+      title: "List days",
       description:
-        "List check-ins, optionally filtered by habit_id and/or a date range.",
-      inputSchema: {
-        habit_id: z.number().int().positive().optional(),
-        from: DateStr.optional(),
-        to: DateStr.optional(),
-      },
+        "List every date in [from, to] that has either a day comment or at least one check-in. Each entry contains the date's free-text comment and its check-ins.",
+      inputSchema: { from: DateStr, to: DateStr },
       annotations: { readOnlyHint: true, idempotentHint: true },
     },
-    async ({ habit_id, from, to }) => {
+    async ({ from, to }) => {
       try {
-        const checkIns = await listCheckIns(db, {
-          ...(habit_id !== undefined ? { habitId: habit_id } : {}),
-          ...(from !== undefined ? { from } : {}),
-          ...(to !== undefined ? { to } : {}),
-        });
-        return ok({ check_ins: checkIns });
+        const days = await listDays(db, { from, to });
+        return ok({ days });
       } catch (e) {
         return fail(e);
       }

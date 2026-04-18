@@ -67,7 +67,7 @@ describe("mcp tools", () => {
         "delete_habit",
         "get_day",
         "get_habit",
-        "list_check_ins",
+        "list_days",
         "list_habits",
         "record_day",
         "set_day_comment",
