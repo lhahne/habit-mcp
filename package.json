@@ -1,0 +1,30 @@
+{
+  "name": "habit-mcp",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Single-user habit tracker MCP server running on Cloudflare Workers + D1.",
+  "type": "module",
+  "main": "src/index.ts",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "migrate:local": "wrangler d1 migrations apply DB --local",
+    "migrate:remote": "wrangler d1 migrations apply DB --remote",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "dependencies": {
+    "@cloudflare/workers-oauth-provider": "^0.4.0",
+    "@modelcontextprotocol/sdk": "^1.29.0",
+    "agents": "^0.11.2",
+    "zod": "^4.3.6"
+  },
+  "devDependencies": {
+    "@cloudflare/vitest-pool-workers": "^0.14.7",
+    "@cloudflare/workers-types": "^4.20260418.0",
+    "typescript": "^5.9.0",
+    "vitest": "^4.1.0",
+    "wrangler": "^4.83.0"
+  }
+}
