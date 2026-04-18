@@ -1,6 +1,11 @@
 import { describe, expect, it } from "vitest";
 import { upsertCheckIn } from "../src/db/check-ins.js";
-import { deleteDayComment, getDay, setDayComment } from "../src/db/days.js";
+import {
+  deleteDayComment,
+  getDay,
+  listDays,
+  setDayComment,
+} from "../src/db/days.js";
 import { db, makeHabit } from "./helpers.js";
 
 describe("days", () => {
@@ -45,5 +50,34 @@ describe("days", () => {
     await expect(setDayComment(db(), "2026-13-01", "x")).rejects.toThrow(
       /ISO date/,
     );
+  });
+
+  it("listDays returns comments and check-ins grouped by date", async () => {
+    const h1 = await makeHabit({ name: "h1" });
+    const h2 = await makeHabit({ name: "h2" });
+
+    await setDayComment(db(), "2026-03-01", "first");
+    await upsertCheckIn(db(), { habitId: h1.id, date: "2026-03-01" });
+    await upsertCheckIn(db(), { habitId: h2.id, date: "2026-03-02", note: "x" });
+    await setDayComment(db(), "2026-03-05", "later");
+    await upsertCheckIn(db(), { habitId: h1.id, date: "2026-04-10" });
+
+    const days = await listDays(db(), { from: "2026-03-01", to: "2026-03-31" });
+    expect(days.map((d) => d.date)).toEqual([
+      "2026-03-01",
+      "2026-03-02",
+      "2026-03-05",
+    ]);
+    expect(days[0]!.comment).toBe("first");
+    expect(days[0]!.checkIns).toHaveLength(1);
+    expect(days[1]!.comment).toBe("");
+    expect(days[1]!.checkIns[0]!.note).toBe("x");
+    expect(days[2]!.checkIns).toEqual([]);
+  });
+
+  it("listDays rejects invalid dates", async () => {
+    await expect(
+      listDays(db(), { from: "bogus", to: "2026-01-01" }),
+    ).rejects.toThrow(/ISO date/);
   });
 });

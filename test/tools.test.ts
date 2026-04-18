@@ -67,7 +67,7 @@ describe("mcp tools", () => {
         "delete_habit",
         "get_day",
         "get_habit",
-        "list_check_ins",
+        "list_days",
         "list_habits",
         "record_day",
         "set_day_comment",
@@ -105,6 +105,21 @@ describe("mcp tools", () => {
     expect(day.data.day.checkIns).toHaveLength(1);
     expect(day.data.day.checkIns[0]!.note).toBe("after dinner");
 
+    const days = await call<{
+      days: { date: string; comment: string; checkIns: { note: string | null }[] }[];
+    }>(client, "list_days", { from: "2026-04-01", to: "2026-04-30" });
+    expect(days.isError).toBe(false);
+    expect(days.data.days).toHaveLength(1);
+    expect(days.data.days[0]!.date).toBe("2026-04-10");
+    expect(days.data.days[0]!.comment).toBe("good day");
+    expect(days.data.days[0]!.checkIns[0]!.note).toBe("after dinner");
+
+    const badRange = await call(client, "list_days", {
+      from: "2026-04-30",
+      to: "2026-04-01",
+    });
+    expect(badRange.isError).toBe(true);
+
     const list = await call<{ habits: { id: number }[] }>(
       client,
       "list_habits",
@@ -134,5 +149,151 @@ describe("mcp tools", () => {
       name: "whatever",
     });
     expect(r.isError).toBe(true);
+  });
+
+  async function makeHabitTool(
+    name = "Read",
+    extras: Record<string, unknown> = {},
+  ): Promise<number> {
+    const res = await call<{ habit: { id: number } }>(client, "create_habit", {
+      name,
+      start_date: "2026-01-01",
+      ...extras,
+    });
+    expect(res.isError).toBe(false);
+    return res.data.habit.id;
+  }
+
+  it("get_habit returns the habit and errors when missing", async () => {
+    const id = await makeHabitTool("Walk");
+    const found = await call<{ habit: { id: number; name: string } }>(
+      client,
+      "get_habit",
+      { id },
+    );
+    expect(found.isError).toBe(false);
+    expect(found.data.habit).toMatchObject({ id, name: "Walk" });
+
+    const missing = await call(client, "get_habit", { id: 4242 });
+    expect(missing.isError).toBe(true);
+  });
+
+  it("update_habit patches fields and clears end_date when null", async () => {
+    const id = await makeHabitTool("Stretch", { end_date: "2026-12-31" });
+    const patched = await call<{
+      habit: { name: string; description: string | null; endDate: string | null };
+    }>(client, "update_habit", {
+      id,
+      name: "Stretch daily",
+      description: "10 min",
+      end_date: null,
+    });
+    expect(patched.isError).toBe(false);
+    expect(patched.data.habit.name).toBe("Stretch daily");
+    expect(patched.data.habit.description).toBe("10 min");
+    expect(patched.data.habit.endDate).toBeNull();
+  });
+
+  it("delete_habit removes the habit and cascades check-ins", async () => {
+    const id = await makeHabitTool("Meditate");
+    const ci = await call(client, "upsert_check_in", {
+      habit_id: id,
+      date: "2026-02-01",
+    });
+    expect(ci.isError).toBe(false);
+
+    const del = await call<{ deleted: number }>(client, "delete_habit", { id });
+    expect(del.isError).toBe(false);
+    expect(del.data.deleted).toBe(id);
+
+    const again = await call(client, "delete_habit", { id });
+    expect(again.isError).toBe(true);
+
+    const day = await call<{
+      day: { checkIns: unknown[] };
+    }>(client, "get_day", { date: "2026-02-01" });
+    expect(day.data.day.checkIns).toEqual([]);
+  });
+
+  it("delete_check_in removes the check-in and errors when missing", async () => {
+    const id = await makeHabitTool("Journal");
+    await call(client, "upsert_check_in", { habit_id: id, date: "2026-02-02" });
+
+    const del = await call<{ deleted: { habit_id: number; date: string } }>(
+      client,
+      "delete_check_in",
+      { habit_id: id, date: "2026-02-02" },
+    );
+    expect(del.isError).toBe(false);
+    expect(del.data.deleted).toEqual({ habit_id: id, date: "2026-02-02" });
+
+    const again = await call(client, "delete_check_in", {
+      habit_id: id,
+      date: "2026-02-02",
+    });
+    expect(again.isError).toBe(true);
+  });
+
+  it("get_day returns empty shape for an unknown date", async () => {
+    const day = await call<{
+      day: { date: string; comment: string; checkIns: unknown[] };
+    }>(client, "get_day", { date: "2030-01-01" });
+    expect(day.isError).toBe(false);
+    expect(day.data.day).toEqual({
+      date: "2030-01-01",
+      comment: "",
+      checkIns: [],
+    });
+  });
+
+  it("set_day_comment creates then updates the comment", async () => {
+    const created = await call<{ day: { comment: string } }>(
+      client,
+      "set_day_comment",
+      { date: "2026-03-10", comment: "started" },
+    );
+    expect(created.isError).toBe(false);
+    expect(created.data.day.comment).toBe("started");
+
+    const updated = await call<{ day: { comment: string } }>(
+      client,
+      "set_day_comment",
+      { date: "2026-03-10", comment: "finished" },
+    );
+    expect(updated.data.day.comment).toBe("finished");
+
+    const fetched = await call<{ day: { comment: string } }>(
+      client,
+      "get_day",
+      { date: "2026-03-10" },
+    );
+    expect(fetched.data.day.comment).toBe("finished");
+  });
+
+  it("delete_day_comment removes the comment and errors when missing", async () => {
+    await call(client, "set_day_comment", {
+      date: "2026-03-11",
+      comment: "scratch",
+    });
+
+    const del = await call<{ deleted: string }>(
+      client,
+      "delete_day_comment",
+      { date: "2026-03-11" },
+    );
+    expect(del.isError).toBe(false);
+    expect(del.data.deleted).toBe("2026-03-11");
+
+    const fetched = await call<{ day: { comment: string } }>(
+      client,
+      "get_day",
+      { date: "2026-03-11" },
+    );
+    expect(fetched.data.day.comment).toBe("");
+
+    const again = await call(client, "delete_day_comment", {
+      date: "2026-03-11",
+    });
+    expect(again.isError).toBe(true);
   });
 });
