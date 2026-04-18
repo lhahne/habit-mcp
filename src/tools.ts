@@ -8,8 +8,13 @@ import {
   listHabits,
   updateHabit,
 } from "./db/habits.js";
-import { deleteCheckIn, upsertCheckIn } from "./db/check-ins.js";
 import {
+  buildUpsertCheckInStatement,
+  deleteCheckIn,
+  upsertCheckIn,
+} from "./db/check-ins.js";
+import {
+  buildSetDayCommentStatement,
   deleteDayComment,
   getDay,
   listDays,
@@ -300,16 +305,22 @@ export function buildMcpServer(db: D1Database): McpServer {
     },
     async ({ date, comment, check_ins }) => {
       try {
+        const statements: D1PreparedStatement[] = [];
         if (comment !== undefined) {
-          await setDayComment(db, date, comment);
+          statements.push(buildSetDayCommentStatement(db, date, comment));
         }
         for (const ci of check_ins ?? []) {
-          await upsertCheckIn(db, {
-            habitId: ci.habit_id,
-            date,
-            ...(ci.done !== undefined ? { done: ci.done } : {}),
-            ...(ci.note !== undefined ? { note: ci.note } : {}),
-          });
+          statements.push(
+            buildUpsertCheckInStatement(db, {
+              habitId: ci.habit_id,
+              date,
+              ...(ci.done !== undefined ? { done: ci.done } : {}),
+              ...(ci.note !== undefined ? { note: ci.note } : {}),
+            }),
+          );
+        }
+        if (statements.length > 0) {
+          await db.batch(statements);
         }
         return ok({ day: await getDay(db, date) });
       } catch (e) {

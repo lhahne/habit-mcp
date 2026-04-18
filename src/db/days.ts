@@ -72,14 +72,14 @@ export async function listDays(
   return [...byDate.values()].sort((a, b) => a.date.localeCompare(b.date));
 }
 
-export async function setDayComment(
+export function buildSetDayCommentStatement(
   db: D1Database,
   date: string,
   comment: string,
-): Promise<Day> {
+): D1PreparedStatement {
   assertIsoDate(date, "date");
   const now = nowIso();
-  await db
+  return db
     .prepare(
       `INSERT INTO days (date, comment, created_at, updated_at)
        VALUES (?1, ?2, ?3, ?3)
@@ -87,8 +87,15 @@ export async function setDayComment(
          comment = excluded.comment,
          updated_at = excluded.updated_at`,
     )
-    .bind(date, comment, now)
-    .run();
+    .bind(date, comment, now);
+}
+
+export async function setDayComment(
+  db: D1Database,
+  date: string,
+  comment: string,
+): Promise<Day> {
+  await buildSetDayCommentStatement(db, date, comment).run();
   return getDay(db, date);
 }
 

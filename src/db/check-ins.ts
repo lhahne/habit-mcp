@@ -23,16 +23,15 @@ export async function getCheckIn(
   return row ? rowToCheckIn(row) : null;
 }
 
-export async function upsertCheckIn(
+export function buildUpsertCheckInStatement(
   db: D1Database,
   input: UpsertCheckInInput,
-): Promise<CheckIn> {
+): D1PreparedStatement {
   assertIsoDate(input.date, "date");
   const done = input.done === undefined ? true : input.done;
   const note = input.note === undefined ? null : input.note;
   const now = nowIso();
-
-  const res = await db
+  return db
     .prepare(
       `INSERT INTO check_ins (habit_id, date, done, note, created_at, updated_at)
        VALUES (?1, ?2, ?3, ?4, ?5, ?5)
@@ -42,8 +41,14 @@ export async function upsertCheckIn(
          updated_at = excluded.updated_at
        RETURNING *`,
     )
-    .bind(input.habitId, input.date, done ? 1 : 0, note, now)
-    .first<CheckInRow>();
+    .bind(input.habitId, input.date, done ? 1 : 0, note, now);
+}
+
+export async function upsertCheckIn(
+  db: D1Database,
+  input: UpsertCheckInInput,
+): Promise<CheckIn> {
+  const res = await buildUpsertCheckInStatement(db, input).first<CheckInRow>();
   if (!res) {
     throw new ToolError(
       `failed to upsert check-in; habit ${input.habitId} may not exist`,
