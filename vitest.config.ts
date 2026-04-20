@@ -21,6 +21,9 @@ export default defineConfig({
         bindings: {
           AUTH_PASSWORD: "test-password",
           SESSION_COOKIE_NAME: "habit_mcp_session",
+          CF_ACCESS_TEAM_DOMAIN: "test.cloudflareaccess.com",
+          CF_ACCESS_AUD: "test-aud",
+          CF_ACCESS_ALLOWED_EMAIL: "owner@example.com",
           TEST_MIGRATIONS: migrations,
         },
       },

@@ -1,3 +1,11 @@
 # Copy to .dev.vars for local development.
-# Must be a non-empty string.
+# AUTH_PASSWORD is the break-glass login when Cloudflare Access is not in front
+# (local dev, tests). Must be a non-empty string.
 AUTH_PASSWORD=change-me
+
+# Cloudflare Access config — only needed in production. Set via
+# `wrangler secret put CF_ACCESS_TEAM_DOMAIN` (and AUD + ALLOWED_EMAIL).
+# Leave unset locally: the password path runs when these are missing.
+# CF_ACCESS_TEAM_DOMAIN=your-team.cloudflareaccess.com
+# CF_ACCESS_AUD=<Application AUD from the CF Zero Trust dashboard>
+# CF_ACCESS_ALLOWED_EMAIL=you@example.com

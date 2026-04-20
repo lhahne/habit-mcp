@@ -1,5 +1,13 @@
 import { SELF } from "cloudflare:test";
-import { describe, expect, it } from "vitest";
+import {
+  SignJWT,
+  createLocalJWKSet,
+  exportJWK,
+  generateKeyPair,
+} from "jose";
+import { afterEach, describe, expect, it } from "vitest";
+
+import { __setJwksForTest } from "../src/auth/cf-access.js";
 
 const BASE = "https://habit-mcp.test";
 
@@ -174,6 +182,90 @@ describe("OAuth + MCP integration", () => {
       redirect: "manual",
     });
     expect(bad.status).toBe(401);
+  });
+
+  describe("Cloudflare Access short-circuit", () => {
+    afterEach(() => {
+      __setJwksForTest(undefined);
+    });
+
+    async function signAccessJwt(opts: {
+      email: string;
+      issuer?: string;
+      audience?: string;
+      expiresIn?: string;
+    }): Promise<string> {
+      const { publicKey, privateKey } = await generateKeyPair("RS256", {
+        extractable: true,
+      });
+      const publicJwk = await exportJWK(publicKey);
+      publicJwk.kid = "test-key";
+      publicJwk.alg = "RS256";
+      __setJwksForTest(createLocalJWKSet({ keys: [publicJwk] }));
+
+      return new SignJWT({ email: opts.email })
+        .setProtectedHeader({ alg: "RS256", kid: "test-key" })
+        .setIssuer(opts.issuer ?? "https://test.cloudflareaccess.com")
+        .setAudience(opts.audience ?? "test-aud")
+        .setIssuedAt()
+        .setExpirationTime(opts.expiresIn ?? "5m")
+        .sign(privateKey);
+    }
+
+    it("skips password when a valid Cf-Access-Jwt-Assertion is present", async () => {
+      const jwt = await signAccessJwt({ email: "owner@example.com" });
+      const clientId = await registerClient();
+      const { challenge } = await pkce();
+      const url = authorizeUrl(clientId, challenge);
+
+      const res = await SELF.fetch(url, {
+        headers: { "Cf-Access-Jwt-Assertion": jwt },
+        redirect: "manual",
+      });
+      expect(res.status).toBe(302);
+      const location = res.headers.get("location")!;
+      expect(new URL(location).searchParams.get("code")).toBeTruthy();
+    });
+
+    it("matches the allowlisted email case-insensitively with whitespace", async () => {
+      const jwt = await signAccessJwt({ email: "  Owner@Example.COM " });
+      const clientId = await registerClient();
+      const { challenge } = await pkce();
+      const url = authorizeUrl(clientId, challenge);
+
+      const res = await SELF.fetch(url, {
+        headers: { "Cf-Access-Jwt-Assertion": jwt },
+        redirect: "manual",
+      });
+      expect(res.status).toBe(302);
+      expect(new URL(res.headers.get("location")!).searchParams.get("code"))
+        .toBeTruthy();
+    });
+
+    it("rejects a JWT whose email is not on the allowlist", async () => {
+      const jwt = await signAccessJwt({ email: "stranger@example.com" });
+      const clientId = await registerClient();
+      const { challenge } = await pkce();
+      const url = authorizeUrl(clientId, challenge);
+
+      const res = await SELF.fetch(url, {
+        headers: { "Cf-Access-Jwt-Assertion": jwt },
+      });
+      expect(res.status).toBe(200);
+      expect(await res.text()).toContain("password");
+    });
+
+    it("falls through to the password form when the JWT is malformed", async () => {
+      const clientId = await registerClient();
+      const { challenge } = await pkce();
+      const url = authorizeUrl(clientId, challenge);
+
+      const res = await SELF.fetch(url, {
+        headers: { "Cf-Access-Jwt-Assertion": "not.a.real.jwt" },
+      });
+      expect(res.status).toBe(200);
+      expect(await res.text()).toContain("password");
+    });
   });
 
   it("completes the OAuth flow and authenticates an MCP call", async () => {
