@@ -12,7 +12,9 @@
     "migrate:remote": "wrangler d1 migrations apply DB --remote",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "test:e2e": "playwright test",
+    "test:e2e:ui": "playwright test --ui"
   },
   "dependencies": {
     "@cloudflare/workers-oauth-provider": "^0.4.0",
@@ -24,6 +26,7 @@
   "devDependencies": {
     "@cloudflare/vitest-pool-workers": "^0.14.7",
     "@cloudflare/workers-types": "^4.20260418.0",
+    "@playwright/test": "^1.59.1",
     "typescript": "^5.9.0",
     "vitest": "^4.1.0",
     "wrangler": "^4.83.0"

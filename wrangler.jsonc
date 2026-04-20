@@ -31,5 +31,30 @@
   ],
   "vars": {
     "SESSION_COOKIE_NAME": "habit_mcp_session"
+  },
+  "env": {
+    "e2e": {
+      "d1_databases": [
+        {
+          "binding": "DB",
+          "database_name": "habit-mcp-e2e",
+          "database_id": "f544cb02-a6b4-4bdd-8534-7c0e8ab60bba",
+          "migrations_dir": "migrations"
+        }
+      ],
+      "kv_namespaces": [
+        {
+          "binding": "OAUTH_KV",
+          "id": "270516a3ae054d3582f3afa1cf0f80c2"
+        }
+      ],
+      "vars": {
+        "SESSION_COOKIE_NAME": "habit_mcp_session",
+        "CF_ACCESS_TEAM_DOMAIN": "e2e.local",
+        "CF_ACCESS_AUD": "e2e-aud",
+        "CF_ACCESS_ALLOWED_EMAIL": "owner@example.com",
+        "ALLOW_LOCAL_JWKS": "1"
+      }
+    }
   }
 }

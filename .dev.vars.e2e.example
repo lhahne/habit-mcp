@@ -1,0 +1,8 @@
+# Generated on each e2e run by e2e/global-setup.ts.
+# Do not commit the real file (.dev.vars.e2e is gitignored).
+# Example shape:
+#
+# AUTH_PASSWORD=e2e-unused
+# CF_ACCESS_JWKS_JSON_DEV={"keys":[{"kty":"RSA","kid":"e2e-key","alg":"RS256","n":"...","e":"AQAB"}]}
+#
+# Other CF_ACCESS_* values and ALLOW_LOCAL_JWKS are set in wrangler.jsonc under env.e2e.vars.
