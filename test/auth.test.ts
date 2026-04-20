@@ -227,6 +227,21 @@ describe("OAuth + MCP integration", () => {
       expect(new URL(location).searchParams.get("code")).toBeTruthy();
     });
 
+    it("matches the allowlisted email case-insensitively with whitespace", async () => {
+      const jwt = await signAccessJwt({ email: "  Owner@Example.COM " });
+      const clientId = await registerClient();
+      const { challenge } = await pkce();
+      const url = authorizeUrl(clientId, challenge);
+
+      const res = await SELF.fetch(url, {
+        headers: { "Cf-Access-Jwt-Assertion": jwt },
+        redirect: "manual",
+      });
+      expect(res.status).toBe(302);
+      expect(new URL(res.headers.get("location")!).searchParams.get("code"))
+        .toBeTruthy();
+    });
+
     it("rejects a JWT whose email is not on the allowlist", async () => {
       const jwt = await signAccessJwt({ email: "stranger@example.com" });
       const clientId = await registerClient();

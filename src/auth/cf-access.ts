@@ -4,7 +4,7 @@ import {
   type JWTVerifyGetKey,
 } from "jose";
 
-let remoteJwks: JWTVerifyGetKey | undefined;
+const remoteJwksByDomain = new Map<string, JWTVerifyGetKey>();
 let jwksOverride: JWTVerifyGetKey | undefined;
 
 export function __setJwksForTest(jwks: JWTVerifyGetKey | undefined): void {
@@ -13,12 +13,18 @@ export function __setJwksForTest(jwks: JWTVerifyGetKey | undefined): void {
 
 function getJwks(teamDomain: string): JWTVerifyGetKey {
   if (jwksOverride) return jwksOverride;
-  if (!remoteJwks) {
-    remoteJwks = createRemoteJWKSet(
+  let cached = remoteJwksByDomain.get(teamDomain);
+  if (!cached) {
+    cached = createRemoteJWKSet(
       new URL(`https://${teamDomain}/cdn-cgi/access/certs`),
     );
+    remoteJwksByDomain.set(teamDomain, cached);
   }
-  return remoteJwks;
+  return cached;
+}
+
+function normalizeEmail(value: string): string {
+  return value.trim().toLowerCase();
 }
 
 export async function verifyCfAccessJwt(
@@ -37,10 +43,12 @@ export async function verifyCfAccessJwt(
       issuer: `https://${teamDomain}`,
       audience,
     });
-    const email = typeof payload.email === "string" ? payload.email : null;
-    if (!email) return null;
+    const rawEmail =
+      typeof payload.email === "string" ? payload.email : null;
+    if (!rawEmail) return null;
+    const email = normalizeEmail(rawEmail);
     const allowedEmail = env.CF_ACCESS_ALLOWED_EMAIL;
-    if (allowedEmail && email !== allowedEmail) return null;
+    if (allowedEmail && email !== normalizeEmail(allowedEmail)) return null;
     return email;
   } catch {
     return null;
