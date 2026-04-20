@@ -21,7 +21,7 @@ export default defineConfig({
     },
   ],
   webServer: {
-    command: `npx wrangler dev --env e2e --port ${PORT} --ip 127.0.0.1 --persist-to .wrangler-e2e`,
+    command: `pnpm exec wrangler dev --env e2e --port ${PORT} --ip 127.0.0.1 --persist-to .wrangler-e2e`,
     url: `${BASE_URL}/health`,
     reuseExistingServer: !process.env.CI,
     timeout: 60_000,
