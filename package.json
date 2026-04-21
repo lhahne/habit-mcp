@@ -5,17 +5,18 @@
   "description": "Single-user habit tracker MCP server running on Cloudflare Workers + D1.",
   "type": "module",
   "main": "src/index.ts",
+  "packageManager": "pnpm@10.33.0",
   "scripts": {
-    "dev": "npm run build:ui && wrangler dev",
-    "deploy": "npm run build:ui && wrangler deploy",
+    "dev": "pnpm build:ui && wrangler dev",
+    "deploy": "pnpm build:ui && wrangler deploy",
     "build:ui": "node scripts/build-ui.mjs",
     "migrate:local": "wrangler d1 migrations apply DB --local",
     "migrate:remote": "wrangler d1 migrations apply DB --remote",
     "typecheck": "tsc --noEmit && tsc --noEmit -p src/ui/client/tsconfig.json",
-    "test": "npm run build:ui && vitest run",
-    "test:watch": "npm run build:ui && vitest",
-    "test:e2e": "npm run build:ui && node --experimental-strip-types e2e/prepare.ts && playwright test",
-    "test:e2e:ui": "npm run build:ui && node --experimental-strip-types e2e/prepare.ts && playwright test --ui"
+    "test": "pnpm build:ui && vitest run",
+    "test:watch": "pnpm build:ui && vitest",
+    "test:e2e": "pnpm build:ui && node --experimental-strip-types e2e/prepare.ts && playwright test",
+    "test:e2e:ui": "pnpm build:ui && node --experimental-strip-types e2e/prepare.ts && playwright test --ui"
   },
   "dependencies": {
     "@cloudflare/workers-oauth-provider": "^0.4.0",

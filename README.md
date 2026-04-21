@@ -35,10 +35,10 @@ test/                      # vitest suite (runs fully offline)
 ## Local development (no network required)
 
 ```sh
-npm install
+pnpm install
 cp .dev.vars.example .dev.vars       # set AUTH_PASSWORD
-npm run migrate:local
-npm run dev                          # http://localhost:8787
+pnpm migrate:local
+pnpm dev                             # http://localhost:8787
 ```
 
 Point the [MCP Inspector](https://github.com/modelcontextprotocol/inspector)
@@ -48,7 +48,7 @@ the password.
 ## Tests
 
 ```sh
-npm test
+pnpm test
 ```
 
 Runs the full suite inside Miniflare with an isolated SQLite-backed D1
@@ -63,8 +63,8 @@ wrangler d1 create habit-mcp
 wrangler kv namespace create OAUTH_KV
 # copy the returned id into wrangler.jsonc
 wrangler secret put AUTH_PASSWORD
-npm run migrate:remote
-npm run deploy
+pnpm migrate:remote
+pnpm deploy
 ```
 
 Then in claude.ai → *Settings → Connectors → Add custom connector* enter

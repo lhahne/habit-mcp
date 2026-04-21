@@ -5,23 +5,23 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## Commands
 
 ```sh
-npm run dev                # wrangler dev on http://localhost:8787
-npm test                   # full vitest suite (offline, Miniflare-backed)
-npm run test:watch         # vitest in watch mode
-npx vitest run test/habits.test.ts   # single test file
-npx vitest run -t "creates a habit"  # single test by name
-npm run typecheck          # tsc --noEmit
-npm run migrate:local      # apply migrations to local D1 (needed before `npm run dev`)
-npm run migrate:remote     # apply migrations to deployed D1
-npm run deploy             # wrangler deploy
+pnpm dev                   # wrangler dev on http://localhost:8787
+pnpm test                  # full vitest suite (offline, Miniflare-backed)
+pnpm test:watch            # vitest in watch mode
+pnpm exec vitest run test/habits.test.ts   # single test file
+pnpm exec vitest run -t "creates a habit"  # single test by name
+pnpm typecheck             # tsc --noEmit
+pnpm migrate:local         # apply migrations to local D1 (needed before `pnpm dev`)
+pnpm migrate:remote        # apply migrations to deployed D1
+pnpm deploy                # wrangler deploy
 ```
 
-Local setup: `cp .dev.vars.example .dev.vars` and set `AUTH_PASSWORD` before `npm run dev`.
+Local setup: `cp .dev.vars.example .dev.vars` and set `AUTH_PASSWORD` before `pnpm dev`.
 
 One-off Vectorize index creation (required before first deploy / before search will return anything in prod):
 
 ```sh
-npx wrangler vectorize create habit-mcp-text --dimensions=1024 --metric=cosine
+pnpm exec wrangler vectorize create habit-mcp-text --dimensions=1024 --metric=cosine
 ```
 
 If the embedding model is changed later, the dimensions may differ. Recreate the index (`vectorize delete` then `create`) and call the `reindex_embeddings` MCP tool to repopulate.
