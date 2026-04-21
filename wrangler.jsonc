@@ -4,6 +4,13 @@
   "main": "src/index.ts",
   "compatibility_date": "2025-10-01",
   "compatibility_flags": ["nodejs_compat"],
+  // Regenerates src/ui/{client-bundle,fonts}.gen.ts before every
+  // `wrangler deploy`. The two files are .gitignored — wrangler invokes
+  // this command from both local deploys and Cloudflare Workers Builds,
+  // so the deployed bundle always matches the committed source.
+  "build": {
+    "command": "pnpm build:ui"
+  },
   "observability": {
     "enabled": true,
     "head_sampling_rate": 1,

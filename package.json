@@ -13,7 +13,7 @@
     "build:ui": "node scripts/build-fonts.mjs && node scripts/build-ui.mjs",
     "migrate:local": "wrangler d1 migrations apply DB --local",
     "migrate:remote": "wrangler d1 migrations apply DB --remote",
-    "typecheck": "tsc --noEmit && tsc --noEmit -p src/ui/client/tsconfig.json",
+    "typecheck": "pnpm build:ui && tsc --noEmit && tsc --noEmit -p src/ui/client/tsconfig.json",
     "test": "pnpm build:ui && vitest run",
     "test:watch": "pnpm build:ui && vitest",
     "test:e2e": "pnpm build:ui && node --experimental-strip-types e2e/prepare.ts && playwright test",
