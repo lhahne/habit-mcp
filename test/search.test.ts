@@ -1016,7 +1016,7 @@ describe("reindex_embeddings prompt", () => {
           name: "run_full_reindex",
           arguments: { limit: "0" },
         }),
-      ).rejects.toThrow(/limit must be an integer between 1 and 25/);
+      ).rejects.toThrow(/limit must be between 1 and 25/);
     } finally {
       await close();
     }

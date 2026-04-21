@@ -519,8 +519,9 @@ export async function reindexStep(
     };
   }
 
-  // orphans: the list drains as we purge, so always start from the top and
-  // use offset only to detect "no more work".
+  // orphans: the list drains as we purge, so each call reads from the top
+  // of the current list. `cursor.offset` is unused here; the phase advances
+  // once `listOrphanSources` returns an empty or fully-consumed slice.
   const orphans = await listOrphanSources(ctx.db);
   if (orphans.length === 0) {
     return { next: advance(true, 0), processed, phase };

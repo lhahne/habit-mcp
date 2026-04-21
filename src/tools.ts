@@ -517,7 +517,7 @@ export function buildMcpServer(ctx: McpContext): McpServer {
     {
       title: "Rebuild vector index (paginated)",
       description:
-        "Recompute embeddings for habit names, descriptions, day comments, and check-in notes in small batches to stay under the per-invocation subrequest limit. Omit `cursor` on the first call. If the response has `done: false`, call again with `{ cursor: <next_cursor> }` until `done: true`. Also deletes orphaned chunk vectors. Idempotent.",
+        "Recompute embeddings for habit names, descriptions, day comments, and check-in notes in small batches to stay under the per-invocation subrequest limit. Omit `cursor` on the first call. If the response has `done: false`, call again with `{ cursor: <next_cursor> }` until `done: true`. Also deletes orphaned chunk vectors. Idempotent. Note: `limit: 0` is a no-op that echoes the cursor (useful for progress inspection only); any loop that drives a full reindex must use `limit >= 1` or it will never terminate.",
       inputSchema: {
         cursor: z.string().optional(),
         limit: z.number().int().min(0).max(25).optional(),
@@ -557,13 +557,13 @@ export function buildMcpServer(ctx: McpContext): McpServer {
       argsSchema: {
         limit: z
           .string()
-          .regex(/^\d+$/, "limit must be an integer between 1 and 25")
+          .regex(/^\d+$/, "limit must be an integer")
           .refine(
             (s) => {
               const n = Number.parseInt(s, 10);
               return n >= 1 && n <= 25;
             },
-            { message: "limit must be an integer between 1 and 25" },
+            { message: "limit must be between 1 and 25" },
           )
           .optional(),
       },
