@@ -29,18 +29,38 @@ test("returns 401 without Cf-Access header", async ({ request }) => {
   expect(res.status()).toBe(401);
 });
 
-test("returns 200 with Cf-Access header", async ({ authedPage }) => {
+test("allowlist mismatch yields 401", async ({ browser }) => {
+  const jwt = await signE2eJwt("stranger@example.com");
+  const ctx = await browser.newContext({
+    extraHTTPHeaders: { "Cf-Access-Jwt-Assertion": jwt },
+  });
+  const res = await ctx.request.get("/ui", { failOnStatusCode: false });
+  expect(res.status()).toBe(401);
+  await ctx.close();
+});
+
+test("renders the VariantE shell with eyebrow and title", async ({
+  authedPage,
+}) => {
   const res = await authedPage.goto("/ui");
   expect(res?.status()).toBe(200);
-  await expect(authedPage.locator("#grid")).toBeVisible();
+  await expect(
+    authedPage.getByText("habit tracker · combined year"),
+  ).toBeVisible();
+  await expect(
+    authedPage.getByText("Combined completion across all habits"),
+  ).toBeVisible();
+  await expect(authedPage.getByText("day by day")).toBeVisible();
 });
 
-test("renders 90 cells by default", async ({ authedPage }) => {
+test("heatmap renders 53x7 cells", async ({ authedPage }) => {
   await authedPage.goto("/ui");
-  await expect(authedPage.locator(".cell[data-date]")).toHaveCount(90);
+  await expect(
+    authedPage.locator('[data-testid="heatcell"]'),
+  ).toHaveCount(53 * 7);
 });
 
-test("cells light up for days with done check-ins", async ({
+test("seeded habit appears in the habit strip", async ({
   authedPage,
   request,
 }) => {
@@ -48,87 +68,55 @@ test("cells light up for days with done check-ins", async ({
   const today = todayUtcIso();
   await seed(request, {
     habits: [{ name: habit, startDate: shiftIso(today, -30) }],
-    checkIns: [{ habitName: habit, date: today, done: true }],
   });
 
   await authedPage.goto("/ui");
-  const cell = authedPage.locator(`.cell[data-date="${today}"]`);
-  await expect(cell).toBeVisible();
-  await expect(cell).toHaveClass(/tier-[1-3]/);
+  const card = authedPage
+    .locator('[data-testid="habitcard"]')
+    .filter({ hasText: habit });
+  await expect(card).toBeVisible();
+  await expect(card.getByText("Current", { exact: true })).toBeVisible();
+  await expect(card.getByText("Longest", { exact: true })).toBeVisible();
+  await expect(card.getByText("Rate", { exact: true })).toBeVisible();
 });
 
-test("clicking a cell opens the side panel with a long comment", async ({
+test("a done check-in shows up as a non-empty heatmap cell and a journal row", async ({
   authedPage,
   request,
 }) => {
   const habit = uniqueName("Run");
   const today = todayUtcIso();
-  const long =
-    "prefix-".repeat(1) +
-    "x".repeat(2900) +
-    "\n\nnewline-section\n" +
-    "-suffix";
   await seed(request, {
-    habits: [{ name: habit, startDate: shiftIso(today, -5) }],
-    checkIns: [
-      { habitName: habit, date: today, done: true, note: "felt great" },
-    ],
-    comments: [{ date: today, comment: long }],
+    habits: [{ name: habit, startDate: shiftIso(today, -10) }],
+    checkIns: [{ habitName: habit, date: today, done: true, note: "5k easy" }],
   });
 
   await authedPage.goto("/ui");
-  await authedPage.locator(`.cell[data-date="${today}"]`).click();
-  await expect(authedPage.locator("#panel")).toBeVisible();
-  await expect(authedPage.locator("#panel-date")).toHaveText(today);
+  const cell = authedPage.locator(`[data-testid="heatcell"][data-date="${today}"]`);
+  await expect(cell).toHaveAttribute("title", new RegExp(`^${today} · 1/\\d`));
 
-  const commentText = await authedPage
-    .locator("#comment")
-    .evaluate((el) => el.textContent ?? "");
-  expect(commentText).toContain("prefix-");
-  expect(commentText).toContain("-suffix");
-  expect(commentText.length).toBeGreaterThan(2900);
-
-  const { scrollH, clientH } = await authedPage
-    .locator("#comment")
-    .evaluate((el) => ({
-      scrollH: el.scrollHeight,
-      clientH: el.clientHeight,
-    }));
-  expect(scrollH).toBeGreaterThan(clientH);
-
-  const row = authedPage.locator("#habits li").filter({ hasText: habit });
+  const row = authedPage.locator(`[data-testid="dayrow"][data-date="${today}"]`);
   await expect(row).toBeVisible();
-  await expect(row.locator(".note")).toHaveText("felt great");
+  await expect(row).toContainText(habit);
+  await expect(row).toContainText("5k easy");
 });
 
-test("habits inactive on the clicked date are hidden", async ({
+test("a day comment renders in the journal and marks the cell", async ({
   authedPage,
   request,
 }) => {
-  const active = uniqueName("ActiveHabit");
-  const expired = uniqueName("ExpiredHabit");
   const today = todayUtcIso();
+  const comment = "Deliberate rest day. Slept 9 hours.";
   await seed(request, {
-    habits: [
-      { name: active, startDate: shiftIso(today, -30) },
-      {
-        name: expired,
-        startDate: shiftIso(today, -30),
-        endDate: shiftIso(today, -10),
-      },
-    ],
-    comments: [{ date: today, comment: "today" }],
+    comments: [{ date: today, comment }],
   });
 
   await authedPage.goto("/ui");
-  await authedPage.locator(`.cell[data-date="${today}"]`).click();
+  const cell = authedPage.locator(`[data-testid="heatcell"][data-date="${today}"]`);
+  await expect(cell).toHaveAttribute("title", /has comment$/);
 
-  await expect(
-    authedPage.locator("#habits li").filter({ hasText: active }),
-  ).toBeVisible();
-  await expect(
-    authedPage.locator("#habits li").filter({ hasText: expired }),
-  ).toHaveCount(0);
+  const row = authedPage.locator(`[data-testid="dayrow"][data-date="${today}"]`);
+  await expect(row).toContainText(comment);
 });
 
 test("XSS inside a comment stays inert", async ({ authedPage, request }) => {
@@ -139,42 +127,15 @@ test("XSS inside a comment stays inert", async ({ authedPage, request }) => {
   });
 
   await authedPage.goto("/ui");
-  await authedPage.locator(`.cell[data-date="${today}"]`).click();
-  await expect(authedPage.locator("#comment")).toHaveText(payload);
+  const row = authedPage.locator(`[data-testid="dayrow"][data-date="${today}"]`);
+  await expect(row).toContainText(payload);
   const fired = await authedPage.evaluate(
     () => (window as unknown as { __xssFired?: boolean }).__xssFired,
   );
   expect(fired).toBeUndefined();
 });
 
-test("prev/next navigation shifts the 90-day window", async ({
-  authedPage,
-}) => {
-  await authedPage.goto("/ui");
-  const today = todayUtcIso();
-  const expectedFrom = shiftIso(today, -89 - 90);
-  const expectedTo = shiftIso(today, -90);
-
-  await authedPage.locator("#prev").click();
-  await expect(authedPage).toHaveURL(
-    new RegExp(`\\?from=${expectedFrom}&to=${expectedTo}`),
-  );
-  await expect(authedPage.locator("#range-label")).toHaveText(
-    `${expectedFrom} \u2192 ${expectedTo}`,
-  );
-});
-
 test("health endpoint is reachable (webServer sanity)", async ({ request }) => {
   const res = await request.get("/health");
   expect(res.ok()).toBe(true);
-});
-
-test("allowlist mismatch yields 401", async ({ browser }) => {
-  const jwt = await signE2eJwt("stranger@example.com");
-  const ctx = await browser.newContext({
-    extraHTTPHeaders: { "Cf-Access-Jwt-Assertion": jwt },
-  });
-  const res = await ctx.request.get("/ui", { failOnStatusCode: false });
-  expect(res.status()).toBe(401);
-  await ctx.close();
 });
