@@ -555,21 +555,34 @@ export function buildMcpServer(ctx: McpContext): McpServer {
       description:
         "Drive reindex_embeddings in a loop until done, staying under the per-invocation subrequest limit. Use for first-deploy indexing, after changing embedding dimensions, or whenever a full rebuild is requested.",
       argsSchema: {
-        limit: z.string().optional(),
+        limit: z
+          .string()
+          .regex(/^\d+$/, "limit must be an integer between 0 and 25")
+          .refine(
+            (s) => {
+              const n = Number.parseInt(s, 10);
+              return n >= 0 && n <= 25;
+            },
+            { message: "limit must be an integer between 0 and 25" },
+          )
+          .optional(),
       },
     },
     ({ limit }) => {
-      const firstCall = limit ? `\`{ limit: ${limit} }\`` : "`{}`";
-      const subsequent = limit
-        ? ` and \`{ limit: ${limit} }\``
-        : " (optionally raising `limit` up to 25 if prior calls succeed)";
+      const parsed = limit !== undefined ? Number.parseInt(limit, 10) : undefined;
+      const firstCall =
+        parsed !== undefined ? `\`{ limit: ${parsed} }\`` : "`{}`";
+      const subsequent =
+        parsed !== undefined
+          ? ` and \`{ limit: ${parsed} }\``
+          : " (optionally raising `limit` up to 25 if prior calls succeed)";
       const text = [
         "Rebuild the full vector index by calling the `reindex_embeddings` tool in a loop:",
         "",
         `1. First call: pass ${firstCall}.`,
         `2. On each response, if \`done === false\`, call again with \`{ cursor: <next_cursor> }\`${subsequent}.`,
         "3. If a call returns `isError: true` with a subrequest-limit message, retry the same cursor with `limit` halved (floor 3).",
-        "4. Between calls, print one progress line: `phase=<phase> processed=<n> totals.chunks=<n>`.",
+        "4. Between calls, print one progress line: `phase=<phase> processed=<n> totals.chunks_upserted=<n>`.",
         "5. When `done === true`, print the final `totals` and stop.",
       ].join("\n");
       return {
