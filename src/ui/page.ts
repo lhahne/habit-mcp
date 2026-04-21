@@ -1,4 +1,5 @@
 import type { Day, Habit } from "../db/schema.js";
+import { clientBundle } from "./client-bundle.gen.js";
 
 export interface UiPageOptions {
   habits: Habit[];
@@ -7,10 +8,16 @@ export interface UiPageOptions {
   to: string;
 }
 
-const escapeJson = (s: string): string => s.replace(/</g, "\\u003c");
+// Escapes characters that could terminate a <script> block early when
+// embedding JSON or JS inside inline <script> tags.
+const escapeForScript = (s: string): string =>
+  s.replace(/</g, "\\u003c");
+
+const escapeJsForScript = (s: string): string =>
+  s.replace(/<\/(script)/gi, "<\\/$1");
 
 export function renderUiPage(opts: UiPageOptions): string {
-  const payload = escapeJson(
+  const payload = escapeForScript(
     JSON.stringify({
       habits: opts.habits.map((h) => ({
         id: h.id,
@@ -32,6 +39,8 @@ export function renderUiPage(opts: UiPageOptions): string {
       to: opts.to,
     }),
   );
+
+  const script = escapeJsForScript(clientBundle);
 
   return `<!doctype html>
 <html lang="en">
@@ -67,7 +76,8 @@ export function renderUiPage(opts: UiPageOptions): string {
     #panel .empty{color:#9aa0a6;font-size:.9rem}
     .habits{list-style:none;padding:0;margin:1rem 0 0;display:flex;flex-direction:column;gap:.5rem}
     .habits li{display:flex;gap:.5rem;align-items:flex-start;padding:.5rem .75rem;background:#0b0c10;border-radius:8px}
-    .habits .name{flex:1;font-weight:500}
+    .habits .habit-body{flex:1;min-width:0}
+    .habits .name{font-weight:500}
     .habits .note{color:#9aa0a6;font-size:.85rem;margin-top:.2rem;white-space:pre-wrap;overflow-wrap:anywhere}
     .habits .status{font-family:ui-monospace,monospace;font-size:1rem}
     .habits .status.done{color:#22c55e}
@@ -78,158 +88,9 @@ export function renderUiPage(opts: UiPageOptions): string {
   </style>
 </head>
 <body>
-  <header>
-    <h1>habit-mcp</h1>
-    <span class="range" id="range-label"></span>
-    <div class="legend" aria-hidden="true">
-      <span>less</span>
-      <span class="cell tier-0"></span>
-      <span class="cell tier-1"></span>
-      <span class="cell tier-2"></span>
-      <span class="cell tier-3"></span>
-      <span>more</span>
-    </div>
-    <nav class="nav">
-      <a id="prev" href="#">&larr; Prev 90</a>
-      <a id="next" href="#">Next 90 &rarr;</a>
-    </nav>
-  </header>
-  <main>
-    <div id="grid" aria-label="Check-in heatmap"></div>
-    <section id="panel" aria-live="polite">
-      <h2 id="panel-date"></h2>
-      <pre id="comment"></pre>
-      <ul class="habits" id="habits"></ul>
-    </section>
-  </main>
+  <div id="app"></div>
   <script type="application/json" id="ui-data">${payload}</script>
-  <script>
-  (function(){
-    var raw = document.getElementById('ui-data').textContent || '{}';
-    var data = JSON.parse(raw);
-    var habits = data.habits || [];
-    var days = data.days || [];
-    var from = data.from;
-    var to = data.to;
-
-    var dayMap = new Map();
-    for (var i = 0; i < days.length; i++) dayMap.set(days[i].date, days[i]);
-
-    function parseIso(s){
-      var p = s.split('-');
-      return new Date(Date.UTC(+p[0], +p[1]-1, +p[2]));
-    }
-    function toIso(d){
-      var y = d.getUTCFullYear();
-      var m = String(d.getUTCMonth()+1).padStart(2,'0');
-      var day = String(d.getUTCDate()).padStart(2,'0');
-      return y+'-'+m+'-'+day;
-    }
-    function addDays(d, n){
-      var c = new Date(d.getTime());
-      c.setUTCDate(c.getUTCDate()+n);
-      return c;
-    }
-    function tierFor(day){
-      if (!day) return 0;
-      var done = 0;
-      for (var i = 0; i < day.checkIns.length; i++) if (day.checkIns[i].done) done++;
-      if (done === 0) return 0;
-      if (done === 1) return 1;
-      if (done <= 3) return 2;
-      return 3;
-    }
-
-    var today = toIso(new Date());
-    document.getElementById('range-label').textContent = from + ' \u2192 ' + to;
-
-    var fromD = parseIso(from);
-    var toD = parseIso(to);
-    var grid = document.getElementById('grid');
-    var cells = [];
-    for (var d = new Date(fromD.getTime()); d.getTime() <= toD.getTime(); d = addDays(d, 1)) {
-      var iso = toIso(d);
-      var day = dayMap.get(iso);
-      var tier = tierFor(day);
-      var cell = document.createElement('button');
-      cell.type = 'button';
-      cell.className = 'cell tier-' + tier;
-      if (day && day.comment) cell.classList.add('has-comment');
-      if (iso === today) cell.classList.add('today');
-      cell.dataset.date = iso;
-      cell.setAttribute('aria-label', iso + ' \u2014 ' + tier + ' done');
-      cell.setAttribute('aria-pressed', 'false');
-      cells.push(cell);
-      grid.appendChild(cell);
-    }
-
-    var panel = document.getElementById('panel');
-    var panelDate = document.getElementById('panel-date');
-    var commentEl = document.getElementById('comment');
-    var habitsEl = document.getElementById('habits');
-
-    function selectDate(iso){
-      for (var i = 0; i < cells.length; i++) {
-        cells[i].setAttribute('aria-pressed', cells[i].dataset.date === iso ? 'true' : 'false');
-      }
-      var day = dayMap.get(iso) || { date: iso, comment: '', checkIns: [] };
-      panelDate.textContent = iso;
-      commentEl.textContent = day.comment || '';
-
-      habitsEl.replaceChildren();
-      var checkInByHabit = new Map();
-      for (var j = 0; j < day.checkIns.length; j++) checkInByHabit.set(day.checkIns[j].habitId, day.checkIns[j]);
-
-      for (var k = 0; k < habits.length; k++) {
-        var h = habits[k];
-        if (h.startDate > iso) continue;
-        if (h.endDate !== null && h.endDate < iso) continue;
-        var ci = checkInByHabit.get(h.id);
-        var done = ci ? ci.done : false;
-
-        var li = document.createElement('li');
-        var name = document.createElement('div');
-        name.style.flex = '1';
-
-        var nameSpan = document.createElement('div');
-        nameSpan.className = 'name';
-        nameSpan.textContent = h.name;
-        name.appendChild(nameSpan);
-
-        if (ci && ci.note) {
-          var noteEl = document.createElement('div');
-          noteEl.className = 'note';
-          noteEl.textContent = ci.note;
-          name.appendChild(noteEl);
-        }
-
-        var status = document.createElement('span');
-        status.className = 'status ' + (done ? 'done' : 'undone');
-        status.textContent = done ? '\u2713' : '\u00b7';
-
-        li.appendChild(status);
-        li.appendChild(name);
-        habitsEl.appendChild(li);
-      }
-      panel.classList.add('open');
-    }
-
-    grid.addEventListener('click', function(e){
-      var t = e.target;
-      if (t && t.classList && t.classList.contains('cell') && t.dataset.date) {
-        selectDate(t.dataset.date);
-      }
-    });
-
-    function shiftRange(days){
-      var shiftedFrom = addDays(fromD, days);
-      var shiftedTo = addDays(toD, days);
-      return '?from=' + toIso(shiftedFrom) + '&to=' + toIso(shiftedTo);
-    }
-    document.getElementById('prev').setAttribute('href', shiftRange(-90));
-    document.getElementById('next').setAttribute('href', shiftRange(90));
-  })();
-  </script>
+  <script>${script}</script>
 </body>
 </html>`;
 }
