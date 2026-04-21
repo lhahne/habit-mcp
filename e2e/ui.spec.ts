@@ -96,11 +96,9 @@ test("clicking a cell opens the side panel with a long comment", async ({
     }));
   expect(scrollH).toBeGreaterThan(clientH);
 
-  await expect(authedPage.locator("#habits li").filter({ hasText: habit }))
-    .toBeVisible();
-  await expect(
-    authedPage.locator("#habits li .note").filter({ hasText: "felt great" }),
-  ).toBeVisible();
+  const row = authedPage.locator("#habits li").filter({ hasText: habit });
+  await expect(row).toBeVisible();
+  await expect(row.locator(".note")).toHaveText("felt great");
 });
 
 test("habits inactive on the clicked date are hidden", async ({

@@ -93,15 +93,24 @@ const App = defineComponent({
       return m;
     });
 
-    const cells = computed(() => {
+    type Cell =
+      | {
+          kind: "day";
+          iso: string;
+          tier: number;
+          hasComment: boolean;
+          isToday: boolean;
+        }
+      | { kind: "pad" };
+
+    // Monday=0 … Sunday=6
+    const mondayIdx = (d: Date): number => (d.getUTCDay() + 6) % 7;
+
+    const cells = computed<Cell[]>(() => {
       const from = parseIso(props.data.from);
       const to = parseIso(props.data.to);
-      const out: Array<{
-        iso: string;
-        tier: number;
-        hasComment: boolean;
-        isToday: boolean;
-      }> = [];
+      const out: Cell[] = [];
+      for (let i = 0; i < mondayIdx(from); i++) out.push({ kind: "pad" });
       for (
         let d = new Date(from.getTime());
         d.getTime() <= to.getTime();
@@ -110,13 +119,38 @@ const App = defineComponent({
         const iso = toIso(d);
         const day = dayMap.value.get(iso);
         out.push({
+          kind: "day",
           iso,
           tier: tierFor(day),
           hasComment: !!(day && day.comment),
           isToday: iso === today,
         });
       }
+      for (let i = mondayIdx(to) + 1; i < 7; i++) out.push({ kind: "pad" });
       return out;
+    });
+
+    const recentDays = computed(() => {
+      const withContent = props.data.days.filter(
+        (d) => d.checkIns.length > 0 || d.comment.trim() !== "",
+      );
+      const sorted = withContent.sort((a, b) =>
+        b.date.localeCompare(a.date),
+      );
+      return sorted.map((d) => {
+        let done = 0;
+        for (const c of d.checkIns) if (c.done) done++;
+        const snippet = d.comment
+          .replace(/\s+/g, " ")
+          .trim()
+          .slice(0, 140);
+        return {
+          date: d.date,
+          done,
+          total: d.checkIns.length,
+          snippet,
+        };
+      });
     });
 
     const selectedDay = computed<UiDay | null>(() => {
@@ -186,8 +220,15 @@ const App = defineComponent({
         ]),
       ]);
 
-      const gridChildren = cells.value.map((c) =>
-        h("button", {
+      const gridChildren = cells.value.map((c, i) => {
+        if (c.kind === "pad") {
+          return h("div", {
+            key: `pad-${i}`,
+            class: "cell pad",
+            "aria-hidden": "true",
+          });
+        }
+        return h("button", {
           key: c.iso,
           type: "button",
           class: [
@@ -201,8 +242,8 @@ const App = defineComponent({
           onClick: () => {
             selected.value = c.iso;
           },
-        }),
-      );
+        });
+      });
 
       const habitItems: VNode[] = visibleHabits.value.map((hab) => {
         const body: VNode[] = [h("div", { class: "name" }, hab.name)];
@@ -239,7 +280,41 @@ const App = defineComponent({
         gridChildren,
       );
 
-      return h(Fragment, null, [header, h("main", null, [grid, panel])]);
+      const recentItems: VNode[] = recentDays.value.map((d) =>
+        h("li", { key: d.date }, [
+          h(
+            "button",
+            {
+              type: "button",
+              "data-date": d.date,
+              "aria-pressed": selected.value === d.date ? "true" : "false",
+              onClick: () => {
+                selected.value = d.date;
+              },
+            },
+            [
+              h("span", { class: "date" }, d.date),
+              h("span", { class: "count" }, `${d.done}/${d.total}`),
+              h("span", { class: "snippet" }, d.snippet),
+            ],
+          ),
+        ]),
+      );
+
+      const recentDaysSection = h("section", { id: "recent-days" }, [
+        h("h2", null, "Recent days"),
+        recentItems.length > 0
+          ? h("ul", null, recentItems)
+          : h("p", { class: "empty" }, "No days recorded yet."),
+      ]);
+
+      return h(Fragment, null, [
+        header,
+        h("main", null, [
+          h("div", { class: "left" }, [grid, recentDaysSection]),
+          panel,
+        ]),
+      ]);
     };
   },
 });
