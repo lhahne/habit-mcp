@@ -7,8 +7,8 @@ import type {
   VectorUpsert,
 } from "./types.js";
 
-export const EMBEDDING_MODEL = "@cf/baai/bge-base-en-v1.5";
-export const EMBEDDING_DIMENSIONS = 768;
+export const EMBEDDING_MODEL = "@cf/baai/bge-m3";
+export const EMBEDDING_DIMENSIONS = 1024;
 
 interface EmbeddingResponse {
   shape: number[];

@@ -1,4 +1,11 @@
 import type { Habit } from "../db/schema.js";
+import {
+  deleteChunkCount,
+  getChunkCount,
+  getChunkCounts,
+  setChunkCount,
+} from "../db/text-chunks.js";
+import { chunkText } from "./chunker.js";
 import type {
   EmbeddingProvider,
   Kind,
@@ -7,39 +14,77 @@ import type {
   VectorUpsert,
 } from "./types.js";
 
-export function vectorIdForHabitName(id: number): string {
+export function sourceIdForHabitName(id: number): string {
   return `habit:${id}:name`;
 }
 
-export function vectorIdForHabitDescription(id: number): string {
+export function sourceIdForHabitDescription(id: number): string {
   return `habit:${id}:description`;
 }
 
-export function vectorIdForDayComment(date: string): string {
+export function sourceIdForDayComment(date: string): string {
   return `day:${date}:comment`;
 }
 
-export function vectorIdForCheckInNote(habitId: number, date: string): string {
+export function sourceIdForCheckInNote(habitId: number, date: string): string {
   return `checkin:${habitId}:${date}:note`;
 }
 
-export function parseVectorId(
-  id: string,
-): { kind: Kind; habitId?: number; date?: string } | null {
-  const habitName = /^habit:(\d+):name$/.exec(id);
-  if (habitName?.[1]) return { kind: "habit_name", habitId: Number(habitName[1]) };
-  const habitDesc = /^habit:(\d+):description$/.exec(id);
-  if (habitDesc?.[1])
-    return { kind: "habit_description", habitId: Number(habitDesc[1]) };
-  const dayComment = /^day:(\d{4}-\d{2}-\d{2}):comment$/.exec(id);
-  if (dayComment?.[1]) return { kind: "day_comment", date: dayComment[1] };
-  const checkIn = /^checkin:(\d+):(\d{4}-\d{2}-\d{2}):note$/.exec(id);
-  if (checkIn?.[1] && checkIn[2])
+export function chunkVectorId(sourceId: string, chunkIndex: number): string {
+  return `${sourceId}:${chunkIndex}`;
+}
+
+export interface ParsedVectorId {
+  sourceId: string;
+  kind: Kind;
+  chunkIndex: number;
+  habitId?: number;
+  date?: string;
+}
+
+export function parseVectorId(id: string): ParsedVectorId | null {
+  const habitName = /^(habit:(\d+):name):(\d+)$/.exec(id);
+  if (habitName?.[1] && habitName[2] && habitName[3] !== undefined) {
     return {
-      kind: "check_in_note",
-      habitId: Number(checkIn[1]),
-      date: checkIn[2],
+      sourceId: habitName[1],
+      kind: "habit_name",
+      habitId: Number(habitName[2]),
+      chunkIndex: Number(habitName[3]),
     };
+  }
+  const habitDesc = /^(habit:(\d+):description):(\d+)$/.exec(id);
+  if (habitDesc?.[1] && habitDesc[2] && habitDesc[3] !== undefined) {
+    return {
+      sourceId: habitDesc[1],
+      kind: "habit_description",
+      habitId: Number(habitDesc[2]),
+      chunkIndex: Number(habitDesc[3]),
+    };
+  }
+  const dayComment = /^(day:(\d{4}-\d{2}-\d{2}):comment):(\d+)$/.exec(id);
+  if (dayComment?.[1] && dayComment[2] && dayComment[3] !== undefined) {
+    return {
+      sourceId: dayComment[1],
+      kind: "day_comment",
+      date: dayComment[2],
+      chunkIndex: Number(dayComment[3]),
+    };
+  }
+  const checkIn = /^(checkin:(\d+):(\d{4}-\d{2}-\d{2}):note):(\d+)$/.exec(id);
+  if (
+    checkIn?.[1] &&
+    checkIn[2] &&
+    checkIn[3] &&
+    checkIn[4] !== undefined
+  ) {
+    return {
+      sourceId: checkIn[1],
+      kind: "check_in_note",
+      habitId: Number(checkIn[2]),
+      date: checkIn[3],
+      chunkIndex: Number(checkIn[4]),
+    };
+  }
   return null;
 }
 
@@ -56,126 +101,162 @@ export async function bestEffort<T>(
   }
 }
 
-interface UpsertJob {
-  id: string;
-  text: string;
-  metadata: VectorMetadata;
+export interface SyncCtx {
+  db: D1Database;
+  store: VectorStore;
+  embed: EmbeddingProvider;
 }
 
-async function upsertJobs(
-  store: VectorStore,
-  embed: EmbeddingProvider,
-  jobs: UpsertJob[],
+/**
+ * Sync the chunks for a single source. Order is chosen to be self-healing
+ * under partial failure: we delete orphans first, then upsert new chunks,
+ * and only then update the chunk_count. If anything fails partway, the next
+ * sync re-runs idempotently. Reindex recomputes everything from scratch.
+ */
+async function syncSource(
+  ctx: SyncCtx,
+  sourceId: string,
+  text: string | null | undefined,
+  metaForChunk: (chunkIndex: number) => VectorMetadata,
 ): Promise<void> {
-  if (jobs.length === 0) return;
-  const vectors = await embed.embed(jobs.map((j) => j.text));
-  const upserts: VectorUpsert[] = jobs.map((job, i) => {
-    const values = vectors[i];
-    if (!values) {
-      throw new Error(`missing embedding for id ${job.id}`);
+  const { db, store, embed } = ctx;
+  const chunks = chunkText(text ?? "");
+  const priorCount = await getChunkCount(db, sourceId);
+
+  if (chunks.length === 0) {
+    if (priorCount > 0) {
+      const toDelete = Array.from({ length: priorCount }, (_, i) =>
+        chunkVectorId(sourceId, i),
+      );
+      await store.deleteByIds(toDelete);
     }
-    return { id: job.id, values, metadata: job.metadata };
+    await deleteChunkCount(db, sourceId);
+    return;
+  }
+
+  if (priorCount > chunks.length) {
+    const orphans: string[] = [];
+    for (let i = chunks.length; i < priorCount; i++) {
+      orphans.push(chunkVectorId(sourceId, i));
+    }
+    await store.deleteByIds(orphans);
+  }
+
+  const vectors = await embed.embed(chunks);
+  const upserts: VectorUpsert[] = chunks.map((_, i) => {
+    const values = vectors[i];
+    if (!values) throw new Error(`missing embedding for ${sourceId}:${i}`);
+    return {
+      id: chunkVectorId(sourceId, i),
+      values,
+      metadata: { ...metaForChunk(i), chunk_index: i },
+    };
   });
   await store.upsert(upserts);
+
+  await setChunkCount(db, sourceId, chunks.length);
 }
 
-function nonEmpty(s: string | null | undefined): s is string {
-  return typeof s === "string" && s.trim().length > 0;
-}
-
-export async function syncHabit(
-  store: VectorStore,
-  embed: EmbeddingProvider,
-  habit: Habit,
+async function purgeSource(
+  ctx: SyncCtx,
+  sourceId: string,
 ): Promise<void> {
-  const jobs: UpsertJob[] = [];
-  const deletes: string[] = [];
-
-  if (nonEmpty(habit.name)) {
-    jobs.push({
-      id: vectorIdForHabitName(habit.id),
-      text: habit.name,
-      metadata: { kind: "habit_name", habit_id: habit.id },
-    });
-  } else {
-    deletes.push(vectorIdForHabitName(habit.id));
+  const { db, store } = ctx;
+  const priorCount = await getChunkCount(db, sourceId);
+  if (priorCount > 0) {
+    const ids = Array.from({ length: priorCount }, (_, i) =>
+      chunkVectorId(sourceId, i),
+    );
+    await store.deleteByIds(ids);
   }
+  await deleteChunkCount(db, sourceId);
+}
 
-  if (nonEmpty(habit.description)) {
-    jobs.push({
-      id: vectorIdForHabitDescription(habit.id),
-      text: habit.description,
-      metadata: { kind: "habit_description", habit_id: habit.id },
-    });
-  } else {
-    deletes.push(vectorIdForHabitDescription(habit.id));
-  }
-
-  await upsertJobs(store, embed, jobs);
-  await store.deleteByIds(deletes);
+export async function syncHabit(ctx: SyncCtx, habit: Habit): Promise<void> {
+  await syncSource(
+    ctx,
+    sourceIdForHabitName(habit.id),
+    habit.name,
+    () => ({ kind: "habit_name", habit_id: habit.id }),
+  );
+  await syncSource(
+    ctx,
+    sourceIdForHabitDescription(habit.id),
+    habit.description,
+    () => ({ kind: "habit_description", habit_id: habit.id }),
+  );
 }
 
 export async function syncDayComment(
-  store: VectorStore,
-  embed: EmbeddingProvider,
+  ctx: SyncCtx,
   date: string,
-  comment: string,
+  comment: string | null | undefined,
 ): Promise<void> {
-  const id = vectorIdForDayComment(date);
-  if (nonEmpty(comment)) {
-    await upsertJobs(store, embed, [
-      { id, text: comment, metadata: { kind: "day_comment", date } },
-    ]);
-  } else {
-    await store.deleteByIds([id]);
-  }
+  await syncSource(
+    ctx,
+    sourceIdForDayComment(date),
+    comment,
+    () => ({ kind: "day_comment", date }),
+  );
 }
 
 export async function syncCheckInNote(
-  store: VectorStore,
-  embed: EmbeddingProvider,
+  ctx: SyncCtx,
   habitId: number,
   date: string,
   note: string | null | undefined,
 ): Promise<void> {
-  const id = vectorIdForCheckInNote(habitId, date);
-  if (nonEmpty(note)) {
-    await upsertJobs(store, embed, [
-      {
-        id,
-        text: note,
-        metadata: { kind: "check_in_note", habit_id: habitId, date },
-      },
-    ]);
-  } else {
-    await store.deleteByIds([id]);
-  }
+  await syncSource(
+    ctx,
+    sourceIdForCheckInNote(habitId, date),
+    note,
+    () => ({ kind: "check_in_note", habit_id: habitId, date }),
+  );
 }
 
 export async function purgeHabit(
-  store: VectorStore,
+  ctx: SyncCtx,
   habitId: number,
   checkInDates: string[],
 ): Promise<void> {
-  const ids = [
-    vectorIdForHabitName(habitId),
-    vectorIdForHabitDescription(habitId),
-    ...checkInDates.map((d) => vectorIdForCheckInNote(habitId, d)),
+  const sources = [
+    sourceIdForHabitName(habitId),
+    sourceIdForHabitDescription(habitId),
+    ...checkInDates.map((d) => sourceIdForCheckInNote(habitId, d)),
   ];
-  await store.deleteByIds(ids);
+  const counts = await getChunkCounts(ctx.db, sources);
+  const ids: string[] = [];
+  for (const source of sources) {
+    const n = counts.get(source) ?? 0;
+    for (let i = 0; i < n; i++) ids.push(chunkVectorId(source, i));
+  }
+  if (ids.length > 0) await ctx.store.deleteByIds(ids);
+  for (const source of sources) {
+    if ((counts.get(source) ?? 0) > 0) await deleteChunkCount(ctx.db, source);
+  }
 }
 
 export async function purgeCheckIn(
-  store: VectorStore,
+  ctx: SyncCtx,
   habitId: number,
   date: string,
 ): Promise<void> {
-  await store.deleteByIds([vectorIdForCheckInNote(habitId, date)]);
+  await purgeSource(ctx, sourceIdForCheckInNote(habitId, date));
 }
 
 export async function purgeDayComment(
-  store: VectorStore,
+  ctx: SyncCtx,
   date: string,
 ): Promise<void> {
-  await store.deleteByIds([vectorIdForDayComment(date)]);
+  await purgeSource(ctx, sourceIdForDayComment(date));
+}
+
+export async function reindexSource(
+  ctx: SyncCtx,
+  sourceId: string,
+  text: string | null | undefined,
+  metaForChunk: (chunkIndex: number) => VectorMetadata,
+): Promise<number> {
+  await syncSource(ctx, sourceId, text, metaForChunk);
+  return chunkText(text ?? "").length;
 }

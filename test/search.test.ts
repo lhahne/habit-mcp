@@ -12,6 +12,7 @@ import {
   fakeEmbeddings,
   type InMemoryStore,
 } from "./vector-stub.js";
+import { chunkText, CHUNK_MAX_CHARS } from "../src/vector/chunker.js";
 
 async function connect(ctxOverrides: Partial<McpContext> = {}): Promise<{
   client: Client;
@@ -59,7 +60,20 @@ interface SearchResult {
   score: number;
   habit_id?: number;
   date?: string;
+  chunk_index: number;
   snippet: string;
+}
+
+function vectorIdsForSource(store: InMemoryStore, sourceId: string): string[] {
+  return [...store.vectors.keys()].filter((k) => k.startsWith(`${sourceId}:`));
+}
+
+async function chunkCount(sourceId: string): Promise<number> {
+  const row = await db()
+    .prepare(`SELECT chunk_count FROM text_chunks WHERE source_id = ?1`)
+    .bind(sourceId)
+    .first<{ chunk_count: number }>();
+  return row?.chunk_count ?? 0;
 }
 
 describe("search_text", () => {
@@ -87,8 +101,10 @@ describe("search_text", () => {
     expect(res.isError).toBe(false);
     const habitId = res.data.habit.id;
 
-    expect(store.vectors.has(`habit:${habitId}:name`)).toBe(true);
-    expect(store.vectors.has(`habit:${habitId}:description`)).toBe(true);
+    expect(store.vectors.has(`habit:${habitId}:name:0`)).toBe(true);
+    expect(store.vectors.has(`habit:${habitId}:description:0`)).toBe(true);
+    expect(await chunkCount(`habit:${habitId}:name`)).toBe(1);
+    expect(await chunkCount(`habit:${habitId}:description`)).toBe(1);
 
     const search = await call<{ results: SearchResult[] }>(client, "search_text", {
       query: "morning meditation",
@@ -105,7 +121,8 @@ describe("search_text", () => {
       start_date: "2026-01-01",
     });
     const habitId = res.data.habit.id;
-    expect(store.vectors.has(`habit:${habitId}:description`)).toBe(false);
+    expect(store.vectors.has(`habit:${habitId}:description:0`)).toBe(false);
+    expect(await chunkCount(`habit:${habitId}:description`)).toBe(0);
   });
 
   it("removes the description vector when cleared via update", async () => {
@@ -115,11 +132,12 @@ describe("search_text", () => {
       start_date: "2026-01-01",
     });
     const habitId = res.data.habit.id;
-    expect(store.vectors.has(`habit:${habitId}:description`)).toBe(true);
+    expect(store.vectors.has(`habit:${habitId}:description:0`)).toBe(true);
 
     await call(client, "update_habit", { id: habitId, description: null });
-    expect(store.vectors.has(`habit:${habitId}:description`)).toBe(false);
-    expect(store.vectors.has(`habit:${habitId}:name`)).toBe(true);
+    expect(store.vectors.has(`habit:${habitId}:description:0`)).toBe(false);
+    expect(await chunkCount(`habit:${habitId}:description`)).toBe(0);
+    expect(store.vectors.has(`habit:${habitId}:name:0`)).toBe(true);
   });
 
   it("indexes day comments and check-in notes, kind filter narrows results", async () => {
@@ -139,8 +157,8 @@ describe("search_text", () => {
       note: "wrote a page about dreams",
     });
 
-    expect(store.vectors.has("day:2026-02-01:comment")).toBe(true);
-    expect(store.vectors.has(`checkin:${habitId}:2026-02-01:note`)).toBe(true);
+    expect(store.vectors.has("day:2026-02-01:comment:0")).toBe(true);
+    expect(store.vectors.has(`checkin:${habitId}:2026-02-01:note:0`)).toBe(true);
 
     const all = await call<{ results: SearchResult[] }>(client, "search_text", {
       query: "dreams",
@@ -169,25 +187,26 @@ describe("search_text", () => {
       date: "2026-03-01",
       note: "original note",
     });
-    const key = `checkin:${habitId}:2026-03-01:note`;
-    const before = store.vectors.get(key)!.values.slice();
+    const sourceId = `checkin:${habitId}:2026-03-01:note`;
+    const before = store.vectors.get(`${sourceId}:0`)!.values.slice();
 
     await call(client, "upsert_check_in", {
       habit_id: habitId,
       date: "2026-03-01",
       note: "totally different words now",
     });
-    const after = store.vectors.get(key)!.values;
+    const after = store.vectors.get(`${sourceId}:0`)!.values;
     expect(after).not.toEqual(before);
 
     await call(client, "delete_check_in", {
       habit_id: habitId,
       date: "2026-03-01",
     });
-    expect(store.vectors.has(key)).toBe(false);
+    expect(store.vectors.has(`${sourceId}:0`)).toBe(false);
+    expect(await chunkCount(sourceId)).toBe(0);
   });
 
-  it("purges habit + check-in note vectors when the habit is deleted", async () => {
+  it("purges habit + check-in note chunks when the habit is deleted", async () => {
     const h = await call<{ habit: { id: number } }>(client, "create_habit", {
       name: "Swim",
       description: "freestyle laps",
@@ -209,21 +228,26 @@ describe("search_text", () => {
 
     await call(client, "delete_habit", { id: habitId });
 
-    expect(store.vectors.has(`habit:${habitId}:name`)).toBe(false);
-    expect(store.vectors.has(`habit:${habitId}:description`)).toBe(false);
-    expect(store.vectors.has(`checkin:${habitId}:2026-04-01:note`)).toBe(false);
-    expect(store.vectors.has(`checkin:${habitId}:2026-04-02:note`)).toBe(false);
+    expect(store.vectors.has(`habit:${habitId}:name:0`)).toBe(false);
+    expect(store.vectors.has(`habit:${habitId}:description:0`)).toBe(false);
+    expect(store.vectors.has(`checkin:${habitId}:2026-04-01:note:0`)).toBe(false);
+    expect(store.vectors.has(`checkin:${habitId}:2026-04-02:note:0`)).toBe(false);
+    expect(await chunkCount(`habit:${habitId}:name`)).toBe(0);
+    expect(await chunkCount(`habit:${habitId}:description`)).toBe(0);
+    expect(await chunkCount(`checkin:${habitId}:2026-04-01:note`)).toBe(0);
+    expect(await chunkCount(`checkin:${habitId}:2026-04-02:note`)).toBe(0);
   });
 
-  it("removes the day comment vector on delete_day_comment", async () => {
+  it("removes the day comment chunks on delete_day_comment", async () => {
     await call(client, "set_day_comment", {
       date: "2026-05-01",
       comment: "note to self",
     });
-    expect(store.vectors.has("day:2026-05-01:comment")).toBe(true);
+    expect(store.vectors.has("day:2026-05-01:comment:0")).toBe(true);
 
     await call(client, "delete_day_comment", { date: "2026-05-01" });
-    expect(store.vectors.has("day:2026-05-01:comment")).toBe(false);
+    expect(store.vectors.has("day:2026-05-01:comment:0")).toBe(false);
+    expect(await chunkCount("day:2026-05-01:comment")).toBe(0);
   });
 
   it("record_day syncs comment and check-in notes", async () => {
@@ -239,8 +263,8 @@ describe("search_text", () => {
       check_ins: [{ habit_id: habitId, done: true, note: "ten minutes" }],
     });
 
-    expect(store.vectors.has("day:2026-06-10:comment")).toBe(true);
-    expect(store.vectors.has(`checkin:${habitId}:2026-06-10:note`)).toBe(true);
+    expect(store.vectors.has("day:2026-06-10:comment:0")).toBe(true);
+    expect(store.vectors.has(`checkin:${habitId}:2026-06-10:note:0`)).toBe(true);
   });
 
   it("hydrates search results with habit / day / check_in objects", async () => {
@@ -285,10 +309,10 @@ describe("search_text", () => {
       start_date: "2026-01-01",
     });
     const habitId = h.data.habit.id;
-    expect(store.vectors.has(`habit:${habitId}:name`)).toBe(true);
+    expect(store.vectors.has(`habit:${habitId}:name:0`)).toBe(true);
 
     await db().prepare("DELETE FROM habits WHERE id = ?1").bind(habitId).run();
-    expect(store.vectors.has(`habit:${habitId}:name`)).toBe(true);
+    expect(store.vectors.has(`habit:${habitId}:name:0`)).toBe(true);
 
     const search = await call<{ results: SearchResult[] }>(client, "search_text", {
       query: "piano",
@@ -296,6 +320,145 @@ describe("search_text", () => {
     });
     expect(search.isError).toBe(false);
     expect(search.data.results.find((r) => r.habit_id === habitId)).toBeUndefined();
+  });
+});
+
+describe("chunked long-text sync", () => {
+  let client: Client;
+  let store: InMemoryStore;
+  let close: () => Promise<void>;
+
+  beforeEach(async () => {
+    const conn = await connect();
+    client = conn.client;
+    store = conn.store;
+    close = conn.close;
+  });
+
+  afterEach(async () => {
+    await close();
+  });
+
+  function longComment(): string {
+    const para = "First paragraph about morning meditation and breathing exercises that ground me. ";
+    const para2 = "Second paragraph about evening journaling and gratitude practices that uplift me. ";
+    const para3 = "Third paragraph about midday walks among the trees and listening to gentle wind. ";
+    const para4 = "Fourth paragraph about reading physical books in the warm afternoon sunlight. ";
+    return [para.repeat(20), para2.repeat(20), para3.repeat(20), para4.repeat(20)].join("\n\n");
+  }
+
+  it("splits a long day comment into multiple chunks", async () => {
+    const text = longComment();
+    expect(text.length).toBeGreaterThan(CHUNK_MAX_CHARS * 2);
+
+    await call(client, "set_day_comment", {
+      date: "2026-08-01",
+      comment: text,
+    });
+
+    const sourceId = "day:2026-08-01:comment";
+    const ids = vectorIdsForSource(store, sourceId);
+    expect(ids.length).toBeGreaterThan(1);
+    expect(await chunkCount(sourceId)).toBe(ids.length);
+    expect(ids.length).toBe(chunkText(text).length);
+  });
+
+  it("shrinks the chunk set when the comment is shortened", async () => {
+    const sourceId = "day:2026-08-02:comment";
+    await call(client, "set_day_comment", {
+      date: "2026-08-02",
+      comment: longComment(),
+    });
+    const longCount = vectorIdsForSource(store, sourceId).length;
+    expect(longCount).toBeGreaterThan(1);
+    expect(await chunkCount(sourceId)).toBe(longCount);
+
+    await call(client, "set_day_comment", {
+      date: "2026-08-02",
+      comment: "short note",
+    });
+    const shortIds = vectorIdsForSource(store, sourceId);
+    expect(shortIds).toEqual([`${sourceId}:0`]);
+    expect(await chunkCount(sourceId)).toBe(1);
+  });
+
+  it("grows the chunk set when the comment is lengthened", async () => {
+    const sourceId = "day:2026-08-03:comment";
+    await call(client, "set_day_comment", {
+      date: "2026-08-03",
+      comment: "short note",
+    });
+    expect(vectorIdsForSource(store, sourceId)).toEqual([`${sourceId}:0`]);
+
+    await call(client, "set_day_comment", {
+      date: "2026-08-03",
+      comment: longComment(),
+    });
+    const ids = vectorIdsForSource(store, sourceId);
+    expect(ids.length).toBeGreaterThan(1);
+    expect(await chunkCount(sourceId)).toBe(ids.length);
+  });
+
+  it("dedupes search results per source and returns the matching chunk as snippet", async () => {
+    const text = longComment();
+    await call(client, "set_day_comment", {
+      date: "2026-08-04",
+      comment: text,
+    });
+
+    const search = await call<{ results: SearchResult[] }>(client, "search_text", {
+      query: "evening journaling gratitude practices",
+      limit: 5,
+    });
+    expect(search.isError).toBe(false);
+
+    const dayHits = search.data.results.filter(
+      (r) => r.kind === "day_comment" && r.date === "2026-08-04",
+    );
+    expect(dayHits.length).toBe(1);
+
+    const allChunks = chunkText(text);
+    expect(allChunks).toContain(dayHits[0]!.snippet);
+    expect(dayHits[0]!.snippet).toContain("evening");
+  });
+
+  it("purges all chunks of a long check-in note on delete", async () => {
+    const h = await call<{ habit: { id: number } }>(client, "create_habit", {
+      name: "Write",
+      start_date: "2026-01-01",
+    });
+    const habitId = h.data.habit.id;
+    const sourceId = `checkin:${habitId}:2026-08-05:note`;
+
+    await call(client, "upsert_check_in", {
+      habit_id: habitId,
+      date: "2026-08-05",
+      note: longComment(),
+    });
+    expect(vectorIdsForSource(store, sourceId).length).toBeGreaterThan(1);
+
+    await call(client, "delete_check_in", {
+      habit_id: habitId,
+      date: "2026-08-05",
+    });
+    expect(vectorIdsForSource(store, sourceId)).toEqual([]);
+    expect(await chunkCount(sourceId)).toBe(0);
+  });
+
+  it("does not lose chunks across many shrink/grow cycles", async () => {
+    const sourceId = "day:2026-08-06:comment";
+    const long = longComment();
+    const longLen = chunkText(long).length;
+
+    for (let i = 0; i < 4; i++) {
+      await call(client, "set_day_comment", { date: "2026-08-06", comment: long });
+      expect(vectorIdsForSource(store, sourceId).length).toBe(longLen);
+      expect(await chunkCount(sourceId)).toBe(longLen);
+
+      await call(client, "set_day_comment", { date: "2026-08-06", comment: "tiny" });
+      expect(vectorIdsForSource(store, sourceId)).toEqual([`${sourceId}:0`]);
+      expect(await chunkCount(sourceId)).toBe(1);
+    }
   });
 });
 
@@ -339,7 +502,7 @@ describe("best-effort sync", () => {
 });
 
 describe("reindex_embeddings", () => {
-  it("rebuilds embeddings from existing D1 rows", async () => {
+  it("rebuilds embeddings from existing D1 rows and counts sources + chunks", async () => {
     const store = inMemoryStore();
     const embed = fakeEmbeddings();
 
@@ -356,15 +519,11 @@ describe("reindex_embeddings", () => {
       .bind("Write", null, "2026-01-01")
       .first<{ id: number }>();
     await db()
-      .prepare(
-        `INSERT INTO days (date, comment) VALUES (?1, ?2)`,
-      )
+      .prepare(`INSERT INTO days (date, comment) VALUES (?1, ?2)`)
       .bind("2026-03-01", "good day")
       .run();
     await db()
-      .prepare(
-        `INSERT INTO days (date, comment) VALUES (?1, ?2)`,
-      )
+      .prepare(`INSERT INTO days (date, comment) VALUES (?1, ?2)`)
       .bind("2026-03-02", "")
       .run();
     await db()
@@ -390,6 +549,7 @@ describe("reindex_embeddings", () => {
           habit_descriptions: number;
           day_comments: number;
           check_in_notes: number;
+          total_chunks: number;
         };
       }>(client, "reindex_embeddings");
       expect(res.isError).toBe(false);
@@ -398,8 +558,43 @@ describe("reindex_embeddings", () => {
         habit_descriptions: 1,
         day_comments: 1,
         check_in_notes: 1,
+        total_chunks: 5,
       });
       expect(store.vectors.size).toBe(5);
+    } finally {
+      await close();
+    }
+  });
+
+  it("cleans up orphaned chunks when reindex sees a shorter text than before", async () => {
+    const store = inMemoryStore();
+    const embed = fakeEmbeddings();
+
+    const { client, close } = await connect({ store, embed });
+    try {
+      const long = "Long ".repeat(800);
+      await call(client, "set_day_comment", {
+        date: "2026-09-01",
+        comment: long,
+      });
+      const sourceId = "day:2026-09-01:comment";
+      const longCount = vectorIdsForSource(store, sourceId).length;
+      expect(longCount).toBeGreaterThan(1);
+
+      // Mutate D1 directly to a short comment, bypassing the sync hook.
+      await db()
+        .prepare(`UPDATE days SET comment = ?1 WHERE date = ?2`)
+        .bind("now short", "2026-09-01")
+        .run();
+      // The vector store still has the long-form orphans.
+      expect(vectorIdsForSource(store, sourceId).length).toBe(longCount);
+
+      const res = await call<{
+        reindexed: { day_comments: number; total_chunks: number };
+      }>(client, "reindex_embeddings");
+      expect(res.isError).toBe(false);
+      expect(vectorIdsForSource(store, sourceId)).toEqual([`${sourceId}:0`]);
+      expect(await chunkCount(sourceId)).toBe(1);
     } finally {
       await close();
     }

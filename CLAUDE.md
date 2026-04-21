@@ -21,8 +21,10 @@ Local setup: `cp .dev.vars.example .dev.vars` and set `AUTH_PASSWORD` before `np
 One-off Vectorize index creation (required before first deploy / before search will return anything in prod):
 
 ```sh
-npx wrangler vectorize create habit-mcp-text --dimensions=768 --metric=cosine
+npx wrangler vectorize create habit-mcp-text --dimensions=1024 --metric=cosine
 ```
+
+If the embedding model is changed later, the dimensions may differ. Recreate the index (`vectorize delete` then `create`) and call the `reindex_embeddings` MCP tool to repopulate.
 
 ## Architecture
 
@@ -44,9 +46,13 @@ A "day" in the API is a synthetic join of the `days` row (may be absent ⇒ empt
 
 ### Vector search (`src/vector/*.ts`)
 
-All four free-form text fields (`habits.name`, `habits.description`, `days.comment`, `check_ins.note`) are embedded into a Cloudflare Vectorize index (binding `VECTORIZE`) using Workers AI (binding `AI`, model `@cf/baai/bge-base-en-v1.5`, 768-dim, cosine). Vector IDs are deterministic so updates overwrite: `habit:{id}:name`, `habit:{id}:description`, `day:{date}:comment`, `checkin:{habit_id}:{date}:note`. Metadata carries `{ kind, habit_id?, date? }` for filtering and for parsing IDs back into D1 lookups.
+All four free-form text fields (`habits.name`, `habits.description`, `days.comment`, `check_ins.note`) are embedded into a Cloudflare Vectorize index (binding `VECTORIZE`) using Workers AI (binding `AI`, model `@cf/baai/bge-m3`, 1024-dim, cosine). Long fields are split into overlapping chunks by `src/vector/chunker.ts` (≈1500 chars per chunk, 200-char overlap, breaks on paragraph/sentence boundaries) — there is no upper bound on field length.
 
-Sync is **online, best-effort**: every successful write (`create_habit`, `update_habit`, `set_day_comment`, `upsert_check_in`, `record_day`) upserts the relevant vector(s); deletes (`delete_habit`, `delete_check_in`, `delete_day_comment`) purge them. Empty/null text is deleted from the index rather than stored. Sync failures are logged but **never fail the write** — run `reindex_embeddings` to recover. The `search_text` tool embeds the query, calls `VECTORIZE.query`, and hydrates each match from D1 (silently skipping stale vectors whose source row has been deleted).
+Vector IDs combine a deterministic source ID with a chunk index: `habit:{id}:name:{i}`, `habit:{id}:description:{i}`, `day:{date}:comment:{i}`, `checkin:{habit_id}:{date}:note:{i}`. Metadata carries `{ kind, habit_id?, date?, chunk_index }` for filtering and for parsing IDs back into D1 lookups. The `text_chunks` D1 table (migration `0002_text_chunks.sql`) tracks `chunk_count` per source ID — this is the source of truth for which chunk vectors should exist, used to delete orphaned chunks when a field shrinks and to purge cleanly on delete.
+
+Sync is **online, best-effort** and **self-healing under partial failure**. The order on every write is: (1) delete orphan chunk vectors `[newCount..priorCount-1]` if the field shrank; (2) upsert all current chunk vectors `[0..newCount-1]`; (3) update `text_chunks` to `newCount`. Any partial failure leaves state where the next sync can re-derive the correct shape, and `reindex_embeddings` recomputes everything from scratch (also cleaning up orphans left by past failures). Sync failures are logged but **never fail the write**.
+
+The `search_text` tool embeds the query, queries Vectorize with over-fetch (`requested * 4`), then **dedupes to one entry per source field** (best-scoring chunk wins). On hydration, the source field is re-chunked deterministically with the same chunker so the matching chunk text can be returned as the `snippet`. Stale matches whose D1 row has been deleted are silently skipped.
 
 In tests, `buildMcpServer` is given an in-memory `VectorStore` and a deterministic hash-based `EmbeddingProvider` from `test/vector-stub.ts` via `testContext()` in `test/helpers.ts`. No Workers AI or Vectorize calls are made offline.
 
