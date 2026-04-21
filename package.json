@@ -13,7 +13,7 @@
     "migrate:remote": "wrangler d1 migrations apply DB --remote",
     "typecheck": "tsc --noEmit && tsc --noEmit -p src/ui/client/tsconfig.json",
     "test": "npm run build:ui && vitest run",
-    "test:watch": "vitest",
+    "test:watch": "npm run build:ui && vitest",
     "test:e2e": "npm run build:ui && node --experimental-strip-types e2e/prepare.ts && playwright test",
     "test:e2e:ui": "npm run build:ui && node --experimental-strip-types e2e/prepare.ts && playwright test --ui"
   },
