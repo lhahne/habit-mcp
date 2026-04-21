@@ -37,8 +37,7 @@ test("returns 200 with Cf-Access header", async ({ authedPage }) => {
 
 test("renders 90 cells by default", async ({ authedPage }) => {
   await authedPage.goto("/ui");
-  const count = await authedPage.locator(".cell[data-date]").count();
-  expect(count).toBe(90);
+  await expect(authedPage.locator(".cell[data-date]")).toHaveCount(90);
 });
 
 test("cells light up for days with done check-ins", async ({

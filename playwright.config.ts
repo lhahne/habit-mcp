@@ -1,7 +1,7 @@
 import { defineConfig, devices } from "@playwright/test";
 
 const PORT = Number(process.env.E2E_PORT ?? 8788);
-const BASE_URL = `http://localhost:${PORT}`;
+const BASE_URL = `http://127.0.0.1:${PORT}`;
 
 export default defineConfig({
   testDir: "./e2e",
@@ -10,7 +10,6 @@ export default defineConfig({
   retries: 0,
   workers: 1,
   reporter: [["list"]],
-  globalSetup: "./e2e/global-setup.ts",
   use: {
     baseURL: BASE_URL,
     trace: "retain-on-failure",
@@ -22,11 +21,12 @@ export default defineConfig({
     },
   ],
   webServer: {
-    command: `npx wrangler dev --env e2e --port ${PORT} --local`,
+    command: `npx wrangler dev --env e2e --port ${PORT} --ip 127.0.0.1`,
     url: `${BASE_URL}/health`,
     reuseExistingServer: !process.env.CI,
     timeout: 60_000,
     stdout: "pipe",
     stderr: "pipe",
+    gracefulShutdown: { signal: "SIGTERM", timeout: 5_000 },
   },
 });

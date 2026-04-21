@@ -1,5 +1,14 @@
+// Runs once before `playwright test`. Wipes local Wrangler state so each
+// e2e run starts from a clean DB, generates a fresh signing key, writes the
+// public JWKS into .dev.vars.e2e (loaded by `wrangler dev --env e2e`), and
+// re-applies migrations against the freshly created local D1.
+//
+// Kept as a separate `node` step (not a Playwright globalSetup) because
+// Playwright launches the webServer concurrently with globalSetup, which
+// races our `rm .wrangler/` against wrangler dev's bundle directory.
+
 import { spawn } from "node:child_process";
-import { rm, writeFile, mkdir } from "node:fs/promises";
+import { mkdir, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { exportJWK, generateKeyPair } from "jose";
@@ -26,7 +35,7 @@ function run(cmd: string, args: string[]): Promise<void> {
   });
 }
 
-export default async function globalSetup(): Promise<void> {
+async function main(): Promise<void> {
   await rm(path.join(repoRoot, ".wrangler"), { recursive: true, force: true });
 
   const { publicKey, privateKey } = await generateKeyPair("RS256", {
@@ -64,3 +73,8 @@ export default async function globalSetup(): Promise<void> {
     "--local",
   ]);
 }
+
+main().catch((err) => {
+  console.error(err);
+  process.exit(1);
+});
