@@ -1007,4 +1007,32 @@ describe("reindex_embeddings prompt", () => {
       await close();
     }
   });
+
+  it("rejects limit=0 because it would make the loop non-terminating", async () => {
+    const { client, close } = await connect();
+    try {
+      await expect(
+        client.getPrompt({
+          name: "run_full_reindex",
+          arguments: { limit: "0" },
+        }),
+      ).rejects.toThrow(/limit must be an integer between 1 and 25/);
+    } finally {
+      await close();
+    }
+  });
+
+  it("rejects non-numeric limit arguments", async () => {
+    const { client, close } = await connect();
+    try {
+      await expect(
+        client.getPrompt({
+          name: "run_full_reindex",
+          arguments: { limit: "abc" },
+        }),
+      ).rejects.toThrow(/limit must be an integer/);
+    } finally {
+      await close();
+    }
+  });
 });

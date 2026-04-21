@@ -557,13 +557,13 @@ export function buildMcpServer(ctx: McpContext): McpServer {
       argsSchema: {
         limit: z
           .string()
-          .regex(/^\d+$/, "limit must be an integer between 0 and 25")
+          .regex(/^\d+$/, "limit must be an integer between 1 and 25")
           .refine(
             (s) => {
               const n = Number.parseInt(s, 10);
-              return n >= 0 && n <= 25;
+              return n >= 1 && n <= 25;
             },
-            { message: "limit must be an integer between 0 and 25" },
+            { message: "limit must be an integer between 1 and 25" },
           )
           .optional(),
       },
