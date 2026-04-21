@@ -131,7 +131,10 @@ const App = defineComponent({
     });
 
     const recentDays = computed(() => {
-      const sorted = [...props.data.days].sort((a, b) =>
+      const withContent = props.data.days.filter(
+        (d) => d.checkIns.length > 0 || d.comment.trim() !== "",
+      );
+      const sorted = withContent.sort((a, b) =>
         b.date.localeCompare(a.date),
       );
       return sorted.map((d) => {

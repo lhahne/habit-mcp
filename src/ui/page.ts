@@ -58,8 +58,8 @@ export function renderUiPage(opts: UiPageOptions): string {
     .nav a{padding:.4rem .75rem;border-radius:6px;background:#14171c;color:#e6e8eb;text-decoration:none;font-size:.85rem;border:1px solid #2b2f36}
     .nav a:hover{background:#1a1e25}
     main{display:flex;gap:1.5rem;padding:1.5rem;align-items:flex-start}
-    .left{display:flex;flex-direction:column;gap:1.5rem;min-width:0;flex-shrink:0}
-    #grid{display:grid;grid-template-rows:repeat(7,1.6rem);grid-auto-flow:column;grid-auto-columns:1.6rem;gap:.3rem}
+    .left{display:flex;flex-direction:column;gap:1.5rem;min-width:0;flex:1 1 auto}
+    #grid{display:grid;grid-template-rows:repeat(7,1.6rem);grid-auto-flow:column;grid-auto-columns:1.6rem;gap:.3rem;max-width:100%;overflow-x:auto}
     .cell{width:1.6rem;height:1.6rem;border-radius:4px;border:0;padding:0;cursor:pointer;background:#14171c;transition:transform .08s}
     .cell:hover{transform:scale(1.15);outline:1px solid #3b82f6}
     .cell.tier-1{background:#0e3b2a}
