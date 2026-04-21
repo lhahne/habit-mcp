@@ -20,6 +20,11 @@ const HTML_HEADERS = {
   "cache-control": "no-store",
 };
 
+const TEXT_HEADERS = {
+  "content-type": "text/plain; charset=utf-8",
+  "cache-control": "no-store",
+};
+
 export const authHandler = {
   async fetch(request: Request, env: Env): Promise<Response> {
     const url = new URL(request.url);
@@ -44,8 +49,20 @@ export const authHandler = {
       return new Response("Unknown OAuth client.", { status: 400 });
     }
 
-    const cfAccessEmail = await verifyCfAccessJwt(request, env);
-    if (cfAccessEmail) {
+    // Once a request arrives with a Cloudflare Access header, the caller has
+    // already authenticated at the edge. Never fall back to the password
+    // form in that case — that's what caused the "double auth" UX where
+    // users saw both the CF Access login and our own password prompt. If
+    // the JWT can't be verified (misconfigured secrets, wrong audience,
+    // email not on the allowlist), refuse with 401 instead.
+    if (request.headers.has("Cf-Access-Jwt-Assertion")) {
+      const cfAccessEmail = await verifyCfAccessJwt(request, env);
+      if (!cfAccessEmail) {
+        return new Response(
+          "Unauthorized: Cloudflare Access token could not be verified.",
+          { status: 401, headers: TEXT_HEADERS },
+        );
+      }
       const { redirectTo } = await env.OAUTH_PROVIDER.completeAuthorization({
         request: oauthReqInfo,
         userId: "owner",

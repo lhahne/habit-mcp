@@ -251,11 +251,11 @@ describe("OAuth + MCP integration", () => {
       const res = await SELF.fetch(url, {
         headers: { "Cf-Access-Jwt-Assertion": jwt },
       });
-      expect(res.status).toBe(200);
-      expect(await res.text()).toContain("password");
+      expect(res.status).toBe(401);
+      expect(await res.text()).not.toContain("password");
     });
 
-    it("falls through to the password form when the JWT is malformed", async () => {
+    it("rejects the request with 401 when the JWT is malformed", async () => {
       const clientId = await registerClient();
       const { challenge } = await pkce();
       const url = authorizeUrl(clientId, challenge);
@@ -263,8 +263,20 @@ describe("OAuth + MCP integration", () => {
       const res = await SELF.fetch(url, {
         headers: { "Cf-Access-Jwt-Assertion": "not.a.real.jwt" },
       });
-      expect(res.status).toBe(200);
-      expect(await res.text()).toContain("password");
+      expect(res.status).toBe(401);
+      expect(await res.text()).not.toContain("password");
+    });
+
+    it("rejects with 401 when the CF Access header is present but empty", async () => {
+      const clientId = await registerClient();
+      const { challenge } = await pkce();
+      const url = authorizeUrl(clientId, challenge);
+
+      const res = await SELF.fetch(url, {
+        headers: { "Cf-Access-Jwt-Assertion": "" },
+      });
+      expect(res.status).toBe(401);
+      expect(await res.text()).not.toContain("password");
     });
   });
 
