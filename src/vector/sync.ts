@@ -519,19 +519,20 @@ export async function reindexStep(
     };
   }
 
-  // orphans
+  // orphans: the list drains as we purge, so each call reads from the top
+  // of the current list. `cursor.offset` is unused here; the phase advances
+  // once `listOrphanSources` returns an empty or fully-consumed slice.
   const orphans = await listOrphanSources(ctx.db);
-  if (cursor.offset >= orphans.length) {
+  if (orphans.length === 0) {
     return { next: advance(true, 0), processed, phase };
   }
-  const slice = orphans.slice(cursor.offset, cursor.offset + limit);
+  const slice = orphans.slice(0, limit);
   for (const sid of slice) {
     await purgeSource(ctx, sid);
     processed.orphans_removed++;
   }
-  const newOffset = cursor.offset + slice.length;
   return {
-    next: advance(newOffset >= orphans.length, newOffset),
+    next: advance(orphans.length <= limit, 0),
     processed,
     phase,
   };

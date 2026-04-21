@@ -672,6 +672,52 @@ describe("reindex_embeddings", () => {
     }
   });
 
+  it("purges all orphans across multiple pages with a small limit", async () => {
+    const store = inMemoryStore();
+    const embed = fakeEmbeddings();
+
+    const { client, close } = await connect({ store, embed });
+    try {
+      // Seed 5 habits whose name + description vectors will become orphans.
+      const habitIds: number[] = [];
+      for (let i = 0; i < 5; i++) {
+        const h = await call<{ habit: { id: number } }>(client, "create_habit", {
+          name: `orphan ${i}`,
+          description: `desc ${i}`,
+          start_date: "2026-01-01",
+        });
+        habitIds.push(h.data.habit.id);
+      }
+
+      // Bypass sync hooks: delete D1 rows directly so the vectors and
+      // text_chunks rows linger as orphans.
+      for (const id of habitIds) {
+        await db()
+          .prepare("DELETE FROM habits WHERE id = ?1")
+          .bind(id)
+          .run();
+      }
+
+      const expectedOrphans = habitIds.length * 2;
+      for (const id of habitIds) {
+        expect(await chunkCount(`habit:${id}:name`)).toBeGreaterThan(0);
+        expect(await chunkCount(`habit:${id}:description`)).toBeGreaterThan(0);
+      }
+
+      const { totals } = await runReindex(client, { limit: 2 });
+      expect(totals.orphans_removed).toBe(expectedOrphans);
+
+      for (const id of habitIds) {
+        expect(await chunkCount(`habit:${id}:name`)).toBe(0);
+        expect(await chunkCount(`habit:${id}:description`)).toBe(0);
+        expect(vectorIdsForSource(store, `habit:${id}:name`)).toEqual([]);
+        expect(vectorIdsForSource(store, `habit:${id}:description`)).toEqual([]);
+      }
+    } finally {
+      await close();
+    }
+  });
+
   it("cleans up orphaned chunks when reindex sees a shorter text than before", async () => {
     const store = inMemoryStore();
     const embed = fakeEmbeddings();
@@ -749,7 +795,7 @@ describe("reindex_embeddings", () => {
     }
   });
 
-  it("reports phases in order habits -> days -> check_ins -> orphans -> done", async () => {
+  it("reports phases in order habits -> days -> check_ins -> orphans", async () => {
     const store = inMemoryStore();
     const embed = fakeEmbeddings();
 
@@ -957,6 +1003,34 @@ describe("reindex_embeddings prompt", () => {
       });
       const text = (res.messages[0]!.content as { text: string }).text;
       expect(text).toContain("limit: 3");
+    } finally {
+      await close();
+    }
+  });
+
+  it("rejects limit=0 because it would make the loop non-terminating", async () => {
+    const { client, close } = await connect();
+    try {
+      await expect(
+        client.getPrompt({
+          name: "run_full_reindex",
+          arguments: { limit: "0" },
+        }),
+      ).rejects.toThrow(/limit must be between 1 and 25/);
+    } finally {
+      await close();
+    }
+  });
+
+  it("rejects non-numeric limit arguments", async () => {
+    const { client, close } = await connect();
+    try {
+      await expect(
+        client.getPrompt({
+          name: "run_full_reindex",
+          arguments: { limit: "abc" },
+        }),
+      ).rejects.toThrow(/limit must be an integer/);
     } finally {
       await close();
     }
