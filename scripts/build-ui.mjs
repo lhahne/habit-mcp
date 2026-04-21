@@ -11,6 +11,7 @@ import { build } from "esbuild";
 import { readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import Vue from "unplugin-vue/esbuild";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(here, "..");
@@ -40,6 +41,15 @@ const result = await build({
   },
   legalComments: "none",
   treeShaking: true,
+  // Force the runtime-only Vue build. With SFCs precompiled at build time,
+  // the template compiler is never called; this alias makes that explicit
+  // and keeps a future accidental `import { compile } from "vue"` from
+  // re-introducing the compiler into the bundle (which would also fail
+  // under the /ui CSP's `unsafe-eval` ban).
+  alias: {
+    vue: "vue/dist/vue.runtime.esm-bundler.js",
+  },
+  plugins: [Vue({ isProduction: true })],
 });
 
 const out = result.outputFiles?.[0];
