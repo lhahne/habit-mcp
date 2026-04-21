@@ -2,6 +2,7 @@ import { env } from "cloudflare:test";
 import type { Habit } from "../src/db/schema.js";
 import { createHabit } from "../src/db/habits.js";
 import type { McpContext } from "../src/tools.js";
+import type { EmbeddingProvider } from "../src/vector/types.js";
 import { fakeEmbeddings, inMemoryStore, type InMemoryStore } from "./vector-stub.js";
 
 export const db = () => env.DB;
@@ -24,13 +25,9 @@ export async function makeHabit(
 
 export interface TestContext extends McpContext {
   store: InMemoryStore;
+  embed: EmbeddingProvider;
 }
 
-export function testContext(overrides: Partial<McpContext> = {}): TestContext {
-  const store = (overrides.store as InMemoryStore | undefined) ?? inMemoryStore();
-  return {
-    db: overrides.db ?? db(),
-    store,
-    embed: overrides.embed ?? fakeEmbeddings(),
-  };
+export function testContext(): TestContext {
+  return { db: db(), store: inMemoryStore(), embed: fakeEmbeddings() };
 }

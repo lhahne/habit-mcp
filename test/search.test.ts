@@ -14,12 +14,26 @@ import {
 } from "./vector-stub.js";
 import { chunkText, CHUNK_MAX_CHARS } from "../src/vector/chunker.js";
 
-async function connect(ctxOverrides: Partial<McpContext> = {}): Promise<{
+type ConnectResult<S> = {
   client: Client;
-  store: InMemoryStore;
+  store: S;
   close: () => Promise<void>;
-}> {
-  const ctx = testContext(ctxOverrides);
+};
+
+async function connect(): Promise<ConnectResult<InMemoryStore>>;
+async function connect(
+  overrides: Partial<McpContext>,
+): Promise<ConnectResult<InMemoryStore | null>>;
+async function connect(
+  overrides: Partial<McpContext> = {},
+): Promise<ConnectResult<InMemoryStore | null>> {
+  const defaults = testContext();
+  const ctx: McpContext = {
+    db: overrides.db ?? defaults.db,
+    store: overrides.store ?? defaults.store,
+    embed: overrides.embed ?? defaults.embed,
+  };
+  const store: InMemoryStore | null = overrides.store ? null : defaults.store;
   const server = buildMcpServer(ctx);
   const [clientTransport, serverTransport] =
     InMemoryTransport.createLinkedPair();
@@ -33,7 +47,7 @@ async function connect(ctxOverrides: Partial<McpContext> = {}): Promise<{
   ]);
   return {
     client,
-    store: ctx.store as InMemoryStore,
+    store,
     close: async () => {
       await client.close();
       await server.close();
@@ -550,6 +564,7 @@ describe("reindex_embeddings", () => {
           day_comments: number;
           check_in_notes: number;
           total_chunks: number;
+          orphans_removed: number;
         };
       }>(client, "reindex_embeddings");
       expect(res.isError).toBe(false);
@@ -559,8 +574,77 @@ describe("reindex_embeddings", () => {
         day_comments: 1,
         check_in_notes: 1,
         total_chunks: 5,
+        orphans_removed: 0,
       });
       expect(store.vectors.size).toBe(5);
+    } finally {
+      await close();
+    }
+  });
+
+  it("removes orphan text_chunks + vectors for rows deleted out-of-band", async () => {
+    const store = inMemoryStore();
+    const embed = fakeEmbeddings();
+
+    const { client, close } = await connect({ store, embed });
+    try {
+      const h = await call<{ habit: { id: number } }>(client, "create_habit", {
+        name: "Keep around",
+        description: "will be orphaned",
+        start_date: "2026-01-01",
+      });
+      const habitId = h.data.habit.id;
+      await call(client, "set_day_comment", {
+        date: "2026-09-10",
+        comment: "journaled",
+      });
+      await call(client, "upsert_check_in", {
+        habit_id: habitId,
+        date: "2026-09-10",
+        note: "did the thing",
+      });
+
+      // Bypass sync hooks: delete D1 rows directly so vectors + text_chunks
+      // rows remain as orphans.
+      await db()
+        .prepare("DELETE FROM habits WHERE id = ?1")
+        .bind(habitId)
+        .run();
+      await db()
+        .prepare("DELETE FROM days WHERE date = ?1")
+        .bind("2026-09-10")
+        .run();
+      // check_ins cascaded with the habit delete, but its text_chunks row
+      // and vectors still linger.
+
+      const orphanSources = [
+        `habit:${habitId}:name`,
+        `habit:${habitId}:description`,
+        "day:2026-09-10:comment",
+        `checkin:${habitId}:2026-09-10:note`,
+      ];
+      for (const s of orphanSources) {
+        expect(await chunkCount(s)).toBeGreaterThan(0);
+        expect(vectorIdsForSource(store, s).length).toBeGreaterThan(0);
+      }
+
+      const res = await call<{
+        reindexed: {
+          habit_names: number;
+          habit_descriptions: number;
+          day_comments: number;
+          check_in_notes: number;
+          total_chunks: number;
+          orphans_removed: number;
+        };
+      }>(client, "reindex_embeddings");
+      expect(res.isError).toBe(false);
+      expect(res.data.reindexed.orphans_removed).toBe(orphanSources.length);
+
+      for (const s of orphanSources) {
+        expect(await chunkCount(s)).toBe(0);
+        expect(vectorIdsForSource(store, s)).toEqual([]);
+      }
     } finally {
       await close();
     }

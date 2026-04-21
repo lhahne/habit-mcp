@@ -157,7 +157,7 @@ async function syncSource(
   await setChunkCount(db, sourceId, chunks.length);
 }
 
-async function purgeSource(
+export async function purgeSource(
   ctx: SyncCtx,
   sourceId: string,
 ): Promise<void> {

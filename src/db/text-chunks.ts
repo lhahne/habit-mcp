@@ -55,3 +55,12 @@ export async function deleteChunkCount(
     .bind(sourceId)
     .run();
 }
+
+export async function listAllChunkSources(
+  db: D1Database,
+): Promise<{ source_id: string; chunk_count: number }[]> {
+  const res = await db
+    .prepare(`SELECT source_id, chunk_count FROM text_chunks`)
+    .all<{ source_id: string; chunk_count: number }>();
+  return res.results ?? [];
+}

@@ -39,6 +39,7 @@ import {
   purgeCheckIn,
   purgeDayComment,
   purgeHabit,
+  purgeSource,
   reindexSource,
   sourceIdForCheckInNote,
   sourceIdForDayComment,
@@ -49,6 +50,7 @@ import {
   syncHabit,
   type SyncCtx,
 } from "./vector/sync.js";
+import { listAllChunkSources } from "./db/text-chunks.js";
 
 const DateStr = z
   .string()
@@ -444,58 +446,69 @@ export function buildMcpServer(ctx: McpContext): McpServer {
           (a, b) => b.score - a.score,
         );
 
-        const results = [];
-        for (const { parsed, score, id } of ranked) {
-          if (!parsed) continue;
-          const base = { id, kind: parsed.kind, score };
-          if (parsed.kind === "habit_name" || parsed.kind === "habit_description") {
-            if (parsed.habitId === undefined) continue;
-            try {
-              const habit = await getHabit(db, parsed.habitId);
-              const fullText =
-                parsed.kind === "habit_name" ? habit.name : habit.description ?? "";
-              const snippet = pickChunk(fullText, parsed.chunkIndex);
-              if (!snippet) continue;
-              results.push({
+        const hydrated = await Promise.all(
+          ranked.map(async ({ parsed, score, id }) => {
+            if (!parsed) return null;
+            const base = { id, kind: parsed.kind, score };
+            if (
+              parsed.kind === "habit_name" ||
+              parsed.kind === "habit_description"
+            ) {
+              if (parsed.habitId === undefined) return null;
+              try {
+                const habit = await getHabit(db, parsed.habitId);
+                const fullText =
+                  parsed.kind === "habit_name"
+                    ? habit.name
+                    : habit.description ?? "";
+                const snippet = pickChunk(fullText, parsed.chunkIndex);
+                if (!snippet) return null;
+                return {
+                  ...base,
+                  habit_id: habit.id,
+                  chunk_index: parsed.chunkIndex,
+                  snippet,
+                  habit,
+                };
+              } catch {
+                return null; // stale vector
+              }
+            }
+            if (parsed.kind === "day_comment") {
+              if (!parsed.date) return null;
+              const day = await getDay(db, parsed.date);
+              if (!day.comment) return null;
+              const snippet = pickChunk(day.comment, parsed.chunkIndex);
+              if (!snippet) return null;
+              return {
                 ...base,
-                habit_id: habit.id,
+                date: parsed.date,
                 chunk_index: parsed.chunkIndex,
                 snippet,
-                habit,
-              });
-            } catch {
-              // stale vector, skip
+                day,
+              };
             }
-          } else if (parsed.kind === "day_comment") {
-            if (!parsed.date) continue;
-            const day = await getDay(db, parsed.date);
-            if (!day.comment) continue;
-            const snippet = pickChunk(day.comment, parsed.chunkIndex);
-            if (!snippet) continue;
-            results.push({
-              ...base,
-              date: parsed.date,
-              chunk_index: parsed.chunkIndex,
-              snippet,
-              day,
-            });
-          } else if (parsed.kind === "check_in_note") {
-            if (parsed.habitId === undefined || !parsed.date) continue;
-            const ci = await getCheckIn(db, parsed.habitId, parsed.date);
-            if (!ci || !ci.note) continue;
-            const snippet = pickChunk(ci.note, parsed.chunkIndex);
-            if (!snippet) continue;
-            results.push({
-              ...base,
-              habit_id: parsed.habitId,
-              date: parsed.date,
-              chunk_index: parsed.chunkIndex,
-              snippet,
-              check_in: ci,
-            });
-          }
-          if (results.length >= requested) break;
-        }
+            if (parsed.kind === "check_in_note") {
+              if (parsed.habitId === undefined || !parsed.date) return null;
+              const ci = await getCheckIn(db, parsed.habitId, parsed.date);
+              if (!ci || !ci.note) return null;
+              const snippet = pickChunk(ci.note, parsed.chunkIndex);
+              if (!snippet) return null;
+              return {
+                ...base,
+                habit_id: parsed.habitId,
+                date: parsed.date,
+                chunk_index: parsed.chunkIndex,
+                snippet,
+                check_in: ci,
+              };
+            }
+            return null;
+          }),
+        );
+        const results = hydrated
+          .filter((r): r is NonNullable<typeof r> => r !== null)
+          .slice(0, requested);
 
         return ok({ results });
       } catch (e) {
@@ -524,56 +537,67 @@ export function buildMcpServer(ctx: McpContext): McpServer {
         let dayCommentSources = 0;
         let checkInNoteSources = 0;
         let totalChunks = 0;
+        const touched = new Set<string>();
 
         for (const h of habits) {
-          const nameChunks = await reindexSource(
-            sctx,
-            sourceIdForHabitName(h.id),
-            h.name,
-            () => ({ kind: "habit_name", habit_id: h.id }),
-          );
+          const nameId = sourceIdForHabitName(h.id);
+          const nameChunks = await reindexSource(sctx, nameId, h.name, () => ({
+            kind: "habit_name",
+            habit_id: h.id,
+          }));
+          touched.add(nameId);
           if (nameChunks > 0) {
             habitNameSources++;
             totalChunks += nameChunks;
           }
+          const descId = sourceIdForHabitDescription(h.id);
           const descChunks = await reindexSource(
             sctx,
-            sourceIdForHabitDescription(h.id),
+            descId,
             h.description,
             () => ({ kind: "habit_description", habit_id: h.id }),
           );
+          touched.add(descId);
           if (descChunks > 0) {
             habitDescriptionSources++;
             totalChunks += descChunks;
           }
         }
         for (const d of days) {
-          const n = await reindexSource(
-            sctx,
-            sourceIdForDayComment(d.date),
-            d.comment,
-            () => ({ kind: "day_comment", date: d.date }),
-          );
+          const id = sourceIdForDayComment(d.date);
+          const n = await reindexSource(sctx, id, d.comment, () => ({
+            kind: "day_comment",
+            date: d.date,
+          }));
+          touched.add(id);
           if (n > 0) {
             dayCommentSources++;
             totalChunks += n;
           }
         }
         for (const ci of notes) {
-          const n = await reindexSource(
-            sctx,
-            sourceIdForCheckInNote(ci.habitId, ci.date),
-            ci.note,
-            () => ({
-              kind: "check_in_note",
-              habit_id: ci.habitId,
-              date: ci.date,
-            }),
-          );
+          const id = sourceIdForCheckInNote(ci.habitId, ci.date);
+          const n = await reindexSource(sctx, id, ci.note, () => ({
+            kind: "check_in_note",
+            habit_id: ci.habitId,
+            date: ci.date,
+          }));
+          touched.add(id);
           if (n > 0) {
             checkInNoteSources++;
             totalChunks += n;
           }
+        }
+
+        // Purge any text_chunks rows (and their vectors) whose source_id
+        // wasn't touched above - i.e. orphans left by deleted rows or by
+        // prior sync failures that never reached deleteChunkCount.
+        const allSources = await listAllChunkSources(db);
+        let orphansRemoved = 0;
+        for (const { source_id } of allSources) {
+          if (touched.has(source_id)) continue;
+          await purgeSource(sctx, source_id);
+          orphansRemoved++;
         }
 
         return ok({
@@ -583,6 +607,7 @@ export function buildMcpServer(ctx: McpContext): McpServer {
             day_comments: dayCommentSources,
             check_in_notes: checkInNoteSources,
             total_chunks: totalChunks,
+            orphans_removed: orphansRemoved,
           },
         });
       } catch (e) {
