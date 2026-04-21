@@ -168,19 +168,37 @@ interface Streaks {
   rate: number;
 }
 
+// Clamp a habit's active window to the slice of the timeline for which the
+// server actually sent us data. `[viewStart, viewEnd]` is `[data.from,
+// min(data.to, realToday)]` — outside that range we have no check_ins, so
+// treating it as "missed" would silently inflate totals and drop rates.
+function habitWindow(
+  habit: UiHabit,
+  viewStart: string,
+  viewEnd: string,
+): { start: string; end: string } | null {
+  const start =
+    habit.startDate > viewStart ? habit.startDate : viewStart;
+  const end =
+    habit.endDate && habit.endDate < viewEnd ? habit.endDate : viewEnd;
+  if (start > end) return null;
+  return { start, end };
+}
+
 function computeStreaks(
   habit: UiHabit,
   byHabitDate: ByHabitDate,
-  today: string,
+  viewStart: string,
+  viewEnd: string,
 ): Streaks {
+  const win = habitWindow(habit, viewStart, viewEnd);
+  if (!win) return { current: 0, longest: 0, total: 0, done: 0, rate: 0 };
   const ci = byHabitDate.get(habit.id) ?? new Map<string, CheckInLite>();
-  const start = habit.startDate > today ? today : habit.startDate;
-  const endDate = habit.endDate && habit.endDate < today ? habit.endDate : today;
   let total = 0;
   let done = 0;
   let longest = 0;
   let run = 0;
-  for (let d = start; d <= endDate; d = addDaysIso(d, 1)) {
+  for (let d = win.start; d <= win.end; d = addDaysIso(d, 1)) {
     total++;
     const c = ci.get(d);
     if (c && c.done) {
@@ -192,7 +210,7 @@ function computeStreaks(
     }
   }
   let current = 0;
-  for (let d = endDate; d >= start; d = addDaysIso(d, -1)) {
+  for (let d = win.end; d >= win.start; d = addDaysIso(d, -1)) {
     const c = ci.get(d);
     if (c && c.done) current++;
     else break;
@@ -211,11 +229,13 @@ interface WeekRate {
 function computeWeeklyRates(
   habit: UiHabit,
   byHabitDate: ByHabitDate,
-  today: string,
+  viewStart: string,
+  viewEnd: string,
   nWeeks: number,
 ): WeekRate[] {
+  const win = habitWindow(habit, viewStart, viewEnd);
   const ci = byHabitDate.get(habit.id) ?? new Map<string, CheckInLite>();
-  const end = parseIso(today);
+  const end = parseIso(viewEnd);
   const endDow = end.getUTCDay();
   const lastWeekEnd = toIso(new Date(end.getTime() + (6 - endDow) * ONE_DAY));
   const out: WeekRate[] = [];
@@ -224,13 +244,14 @@ function computeWeeklyRates(
     const wkStart = addDaysIso(wkEnd, -6);
     let done = 0;
     let total = 0;
-    for (let i = 0; i < 7; i++) {
-      const d = addDaysIso(wkStart, i);
-      if (d < habit.startDate || d > today) continue;
-      if (habit.endDate && d > habit.endDate) continue;
-      total++;
-      const c = ci.get(d);
-      if (c && c.done) done++;
+    if (win) {
+      for (let i = 0; i < 7; i++) {
+        const d = addDaysIso(wkStart, i);
+        if (d < win.start || d > win.end) continue;
+        total++;
+        const c = ci.get(d);
+        if (c && c.done) done++;
+      }
     }
     out.push({
       weekStart: wkStart,
@@ -253,12 +274,16 @@ interface DowEntry {
 function computeDowProfile(
   habit: UiHabit,
   byHabitDate: ByHabitDate,
-  today: string,
+  viewStart: string,
+  viewEnd: string,
 ): DowEntry[] {
-  const ci = byHabitDate.get(habit.id) ?? new Map<string, CheckInLite>();
   const buckets = Array.from({ length: 7 }, () => ({ done: 0, total: 0 }));
-  const endDate = habit.endDate && habit.endDate < today ? habit.endDate : today;
-  for (let d = habit.startDate; d <= endDate; d = addDaysIso(d, 1)) {
+  const win = habitWindow(habit, viewStart, viewEnd);
+  if (!win) {
+    return buckets.map((b, i) => ({ dow: i, rate: 0, done: 0, total: 0 }));
+  }
+  const ci = byHabitDate.get(habit.id) ?? new Map<string, CheckInLite>();
+  for (let d = win.start; d <= win.end; d = addDaysIso(d, 1)) {
     const dow = parseIso(d).getUTCDay();
     const b = buckets[dow]!;
     b.total++;
@@ -277,7 +302,10 @@ interface HeatCell {
   date: string;
   doneCount: number;
   activeHabits: number;
-  future: boolean;
+  // True when we have no check-in data for this cell — either past the
+  // view window (`data.to` or real today, whichever is earlier) or before
+  // `data.from`. Visually rendered the same as "future".
+  noData: boolean;
   hasComment: boolean;
 }
 
@@ -286,29 +314,32 @@ function computeHeatCells(
   byHabitDate: ByHabitDate,
   commentSet: Set<string>,
   gridStart: string,
-  today: string,
+  viewStart: string,
+  viewEnd: string,
 ): HeatCell[][] {
   const cols: HeatCell[][] = [];
   for (let w = 0; w < 53; w++) {
     const col: HeatCell[] = [];
     for (let d = 0; d < 7; d++) {
       const date = addDaysIso(gridStart, w * 7 + d);
-      const future = date > today;
+      const noData = date < viewStart || date > viewEnd;
       let doneCount = 0;
       let activeHabits = 0;
-      for (const h of habits) {
-        if (date < h.startDate) continue;
-        if (h.endDate && date > h.endDate) continue;
-        activeHabits++;
-        const c = byHabitDate.get(h.id)?.get(date);
-        if (c && c.done) doneCount++;
+      if (!noData) {
+        for (const h of habits) {
+          if (date < h.startDate) continue;
+          if (h.endDate && date > h.endDate) continue;
+          activeHabits++;
+          const c = byHabitDate.get(h.id)?.get(date);
+          if (c && c.done) doneCount++;
+        }
       }
       col.push({
         date,
         doneCount,
         activeHabits,
-        future,
-        hasComment: commentSet.has(date),
+        noData,
+        hasComment: !noData && commentSet.has(date),
       });
     }
     cols.push(col);
@@ -493,7 +524,7 @@ const CombinedHeat = defineComponent({
       let totalSlots = 0;
       for (const col of props.cols) {
         for (const c of col) {
-          if (c.future) continue;
+          if (c.noData) continue;
           if (c.activeHabits === 0) continue;
           totalDone += c.doneCount;
           totalSlots += c.activeHabits;
@@ -553,16 +584,15 @@ const CombinedHeat = defineComponent({
             },
           },
           col.map((c) => {
-            const outOfRange = c.activeHabits === 0;
-            const fill =
-              c.future || outOfRange
-                ? "transparent"
-                : c.doneCount === 0
-                  ? T.a0
-                  : HABIT_COLORS[Math.min(c.doneCount - 1, HABIT_COLORS.length - 1)];
-            const tooltipParts = [
-              `${c.date} · ${c.doneCount}/${c.activeHabits} done`,
-            ];
+            const unshaded = c.noData || c.activeHabits === 0;
+            const fill = unshaded
+              ? "transparent"
+              : c.doneCount === 0
+                ? T.a0
+                : HABIT_COLORS[Math.min(c.doneCount - 1, HABIT_COLORS.length - 1)];
+            const tooltipParts = c.noData
+              ? [c.date]
+              : [`${c.date} · ${c.doneCount}/${c.activeHabits} done`];
             if (c.hasComment) tooltipParts.push("has comment");
             return h(
               "div",
@@ -576,14 +606,11 @@ const CombinedHeat = defineComponent({
                   height: `${cell}px`,
                   position: "relative",
                   background: fill,
-                  border:
-                    c.future || outOfRange
-                      ? `1px dashed ${T.ruleSoft}`
-                      : "none",
+                  border: unshaded ? `1px dashed ${T.ruleSoft}` : "none",
                   boxSizing: "border-box",
                 },
               },
-              c.hasComment && !c.future
+              c.hasComment
                 ? [
                     h("div", {
                       style: {
@@ -1383,7 +1410,15 @@ const App = defineComponent({
   setup(props) {
     return () => {
       const data = props.data;
-      const today = todayIso();
+      // The view's effective "today" — the later edge of the data we were
+      // actually served. For the default view this is real today; for
+      // `?to=<past date>` requests we use `data.to` so stats don't count
+      // the un-served gap as "missed". We also clamp against real today
+      // in case `data.to` is ahead of it.
+      const realToday = todayIso();
+      const viewEnd = data.to < realToday ? data.to : realToday;
+      const viewStart = data.from;
+
       const habits = [...data.habits].sort((a, b) => a.id - b.id);
 
       const dayMap = new Map<string, UiDay>();
@@ -1396,26 +1431,27 @@ const App = defineComponent({
         if (d.comment && d.comment.trim() !== "") commentSet.add(d.date);
       }
 
-      const { gridStart } = computeGridRange(today);
+      const { gridStart } = computeGridRange(viewEnd);
       const heatCells = computeHeatCells(
         habits,
         byHabitDate,
         commentSet,
         gridStart,
-        today,
+        viewStart,
+        viewEnd,
       );
 
       let totalsDone = 0;
       let totalsTotal = 0;
       const panels: HabitPanel[] = habits.map((habit) => {
-        const s = computeStreaks(habit, byHabitDate, today);
+        const s = computeStreaks(habit, byHabitDate, viewStart, viewEnd);
         totalsDone += s.done;
         totalsTotal += s.total;
         return {
           habit,
           streaks: s,
-          weekly: computeWeeklyRates(habit, byHabitDate, today, 26),
-          dow: computeDowProfile(habit, byHabitDate, today),
+          weekly: computeWeeklyRates(habit, byHabitDate, viewStart, viewEnd, 26),
+          dow: computeDowProfile(habit, byHabitDate, viewStart, viewEnd),
         };
       });
 
@@ -1476,7 +1512,7 @@ const App = defineComponent({
             activeDays,
             from: data.from,
             to: data.to,
-            today,
+            today: viewEnd,
           }),
           h(CombinedHeat, { cols: heatCells, gridStart }),
           habits.length > 0 ? h(HabitStrip, { panels }) : null,
