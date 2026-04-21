@@ -29,6 +29,15 @@
       "id": "270516a3ae054d3582f3afa1cf0f80c2"
     }
   ],
+  "ai": {
+    "binding": "AI"
+  },
+  "vectorize": [
+    {
+      "binding": "VECTORIZE",
+      "index_name": "habit-mcp-text"
+    }
+  ],
   "vars": {
     "SESSION_COOKIE_NAME": "habit_mcp_session"
   },

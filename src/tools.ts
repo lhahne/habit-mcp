@@ -11,21 +11,48 @@ import {
 import {
   buildUpsertCheckInStatement,
   deleteCheckIn,
+  getCheckIn,
+  listAllCheckInsWithNotes,
+  listCheckInDatesForHabit,
   upsertCheckIn,
 } from "./db/check-ins.js";
 import {
   buildSetDayCommentStatement,
   deleteDayComment,
   getDay,
+  listAllDaysWithComments,
   listDays,
   setDayComment,
 } from "./db/days.js";
 import { isIsoDate } from "./util/date.js";
 import { ToolError } from "./util/errors.js";
+import { KINDS, type EmbeddingProvider, type Kind, type VectorStore } from "./vector/types.js";
+import {
+  bestEffort,
+  parseVectorId,
+  purgeCheckIn,
+  purgeDayComment,
+  purgeHabit,
+  syncCheckInNote,
+  syncDayComment,
+  syncHabit,
+  vectorIdForCheckInNote,
+  vectorIdForDayComment,
+  vectorIdForHabitDescription,
+  vectorIdForHabitName,
+} from "./vector/sync.js";
 
 const DateStr = z
   .string()
   .refine(isIsoDate, { message: "must be ISO date YYYY-MM-DD" });
+
+const KindEnum = z.enum(KINDS);
+
+export interface McpContext {
+  db: D1Database;
+  store: VectorStore;
+  embed: EmbeddingProvider;
+}
 
 function ok(data: unknown) {
   return {
@@ -47,7 +74,9 @@ function fail(err: unknown) {
   };
 }
 
-export function buildMcpServer(db: D1Database): McpServer {
+export function buildMcpServer(ctx: McpContext): McpServer {
+  const { db, store, embed } = ctx;
+
   const server = new McpServer(
     { name: "habit-mcp", version: "0.1.0" },
     { capabilities: { tools: {} } },
@@ -109,6 +138,7 @@ export function buildMcpServer(db: D1Database): McpServer {
           startDate: start_date,
           endDate: end_date ?? null,
         });
+        await bestEffort("syncHabit.create", () => syncHabit(store, embed, habit));
         return ok({ habit });
       } catch (e) {
         return fail(e);
@@ -138,6 +168,7 @@ export function buildMcpServer(db: D1Database): McpServer {
           ...(start_date !== undefined ? { startDate: start_date } : {}),
           ...(end_date !== undefined ? { endDate: end_date } : {}),
         });
+        await bestEffort("syncHabit.update", () => syncHabit(store, embed, habit));
         return ok({ habit });
       } catch (e) {
         return fail(e);
@@ -155,7 +186,11 @@ export function buildMcpServer(db: D1Database): McpServer {
     },
     async ({ id }) => {
       try {
+        const checkInDates = await listCheckInDatesForHabit(db, id);
         await deleteHabit(db, id);
+        await bestEffort("purgeHabit", () =>
+          purgeHabit(store, id, checkInDates),
+        );
         return ok({ deleted: id });
       } catch (e) {
         return fail(e);
@@ -203,6 +238,9 @@ export function buildMcpServer(db: D1Database): McpServer {
           ...(done !== undefined ? { done } : {}),
           ...(note !== undefined ? { note } : {}),
         });
+        await bestEffort("syncCheckInNote", () =>
+          syncCheckInNote(store, embed, checkIn.habitId, checkIn.date, checkIn.note),
+        );
         return ok({ check_in: checkIn });
       } catch (e) {
         return fail(e);
@@ -224,6 +262,9 @@ export function buildMcpServer(db: D1Database): McpServer {
     async ({ habit_id, date }) => {
       try {
         await deleteCheckIn(db, habit_id, date);
+        await bestEffort("purgeCheckIn", () =>
+          purgeCheckIn(store, habit_id, date),
+        );
         return ok({ deleted: { habit_id, date } });
       } catch (e) {
         return fail(e);
@@ -258,7 +299,11 @@ export function buildMcpServer(db: D1Database): McpServer {
     },
     async ({ date, comment }) => {
       try {
-        return ok({ day: await setDayComment(db, date, comment) });
+        const day = await setDayComment(db, date, comment);
+        await bestEffort("syncDayComment", () =>
+          syncDayComment(store, embed, date, comment),
+        );
+        return ok({ day });
       } catch (e) {
         return fail(e);
       }
@@ -276,6 +321,9 @@ export function buildMcpServer(db: D1Database): McpServer {
     async ({ date }) => {
       try {
         await deleteDayComment(db, date);
+        await bestEffort("purgeDayComment", () =>
+          purgeDayComment(store, date),
+        );
         return ok({ deleted: date });
       } catch (e) {
         return fail(e);
@@ -322,7 +370,199 @@ export function buildMcpServer(db: D1Database): McpServer {
         if (statements.length > 0) {
           await db.batch(statements);
         }
+        if (comment !== undefined) {
+          await bestEffort("syncDayComment.record", () =>
+            syncDayComment(store, embed, date, comment),
+          );
+        }
+        for (const ci of check_ins ?? []) {
+          if (ci.note !== undefined) {
+            const noteVal = ci.note;
+            await bestEffort("syncCheckInNote.record", () =>
+              syncCheckInNote(store, embed, ci.habit_id, date, noteVal),
+            );
+          }
+        }
         return ok({ day: await getDay(db, date) });
+      } catch (e) {
+        return fail(e);
+      }
+    },
+  );
+
+  server.registerTool(
+    "search_text",
+    {
+      title: "Semantic text search",
+      description:
+        "Semantic search across all free-form text fields (habit names, habit descriptions, day comments, check-in notes). Returns a mixed, ranked list of matches. Optionally filter by `kinds`.",
+      inputSchema: {
+        query: z.string().min(1),
+        limit: z.number().int().min(1).max(50).optional(),
+        kinds: z.array(KindEnum).min(1).optional(),
+      },
+      annotations: { readOnlyHint: true, idempotentHint: true },
+    },
+    async ({ query, limit, kinds }) => {
+      try {
+        const vecs = await embed.embed([query]);
+        const vec = vecs[0];
+        if (!vec) throw new ToolError("failed to embed query");
+        const filter =
+          kinds && kinds.length > 0
+            ? ({ kind: { $in: kinds as Kind[] } } as Record<string, unknown>)
+            : undefined;
+        const matches = await store.query(vec, {
+          topK: limit ?? 10,
+          ...(filter ? { filter } : {}),
+        });
+
+        const results = [];
+        for (const m of matches) {
+          const parsed = parseVectorId(m.id);
+          if (!parsed) continue;
+          const base = { id: m.id, kind: parsed.kind, score: m.score };
+          if (parsed.kind === "habit_name" || parsed.kind === "habit_description") {
+            if (parsed.habitId === undefined) continue;
+            try {
+              const habit = await getHabit(db, parsed.habitId);
+              const snippet =
+                parsed.kind === "habit_name" ? habit.name : habit.description ?? "";
+              results.push({
+                ...base,
+                habit_id: habit.id,
+                snippet,
+                habit,
+              });
+            } catch {
+              // stale vector, skip
+            }
+          } else if (parsed.kind === "day_comment") {
+            if (!parsed.date) continue;
+            const day = await getDay(db, parsed.date);
+            if (!day.comment) continue;
+            results.push({
+              ...base,
+              date: parsed.date,
+              snippet: day.comment,
+              day,
+            });
+          } else if (parsed.kind === "check_in_note") {
+            if (parsed.habitId === undefined || !parsed.date) continue;
+            const ci = await getCheckIn(db, parsed.habitId, parsed.date);
+            if (!ci || !ci.note) continue;
+            results.push({
+              ...base,
+              habit_id: parsed.habitId,
+              date: parsed.date,
+              snippet: ci.note,
+              check_in: ci,
+            });
+          }
+        }
+
+        return ok({ results });
+      } catch (e) {
+        return fail(e);
+      }
+    },
+  );
+
+  server.registerTool(
+    "reindex_embeddings",
+    {
+      title: "Rebuild vector index",
+      description:
+        "Recompute and upsert embeddings for all habit names, descriptions, day comments, and check-in notes. Safe to call anytime; overwrites by deterministic id.",
+      inputSchema: {},
+      annotations: { idempotentHint: true },
+    },
+    async () => {
+      try {
+        const habits = await listHabits(db);
+        const days = await listAllDaysWithComments(db);
+        const notes = await listAllCheckInsWithNotes(db);
+
+        let habitNames = 0;
+        let habitDescriptions = 0;
+        let dayComments = 0;
+        let checkInNotes = 0;
+
+        const BATCH = 32;
+        const texts: string[] = [];
+        const ids: string[] = [];
+        const metas: { kind: Kind; habit_id?: number; date?: string }[] = [];
+
+        const flush = async () => {
+          if (texts.length === 0) return;
+          const vectors = await embed.embed(texts);
+          await store.upsert(
+            texts.map((_, i) => {
+              const values = vectors[i];
+              const id = ids[i]!;
+              const metadata = metas[i]!;
+              if (!values) throw new ToolError(`missing embedding for ${id}`);
+              return { id, values, metadata };
+            }),
+          );
+          texts.length = 0;
+          ids.length = 0;
+          metas.length = 0;
+        };
+
+        const push = async (
+          id: string,
+          text: string,
+          metadata: { kind: Kind; habit_id?: number; date?: string },
+        ) => {
+          texts.push(text);
+          ids.push(id);
+          metas.push(metadata);
+          if (texts.length >= BATCH) await flush();
+        };
+
+        for (const h of habits) {
+          if (h.name && h.name.trim() !== "") {
+            await push(vectorIdForHabitName(h.id), h.name, {
+              kind: "habit_name",
+              habit_id: h.id,
+            });
+            habitNames++;
+          }
+          if (h.description && h.description.trim() !== "") {
+            await push(vectorIdForHabitDescription(h.id), h.description, {
+              kind: "habit_description",
+              habit_id: h.id,
+            });
+            habitDescriptions++;
+          }
+        }
+        for (const d of days) {
+          await push(vectorIdForDayComment(d.date), d.comment, {
+            kind: "day_comment",
+            date: d.date,
+          });
+          dayComments++;
+        }
+        for (const n of notes) {
+          if (!n.note) continue;
+          await push(vectorIdForCheckInNote(n.habitId, n.date), n.note, {
+            kind: "check_in_note",
+            habit_id: n.habitId,
+            date: n.date,
+          });
+          checkInNotes++;
+        }
+        await flush();
+
+        return ok({
+          reindexed: {
+            habit_names: habitNames,
+            habit_descriptions: habitDescriptions,
+            day_comments: dayComments,
+            check_in_notes: checkInNotes,
+          },
+        });
       } catch (e) {
         return fail(e);
       }

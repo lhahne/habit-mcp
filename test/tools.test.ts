@@ -4,10 +4,10 @@ import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 
 import { buildMcpServer } from "../src/tools.js";
-import { db } from "./helpers.js";
+import { testContext } from "./helpers.js";
 
 async function connect(): Promise<{ client: Client; close: () => Promise<void> }> {
-  const server = buildMcpServer(db());
+  const server = buildMcpServer(testContext());
   const [clientTransport, serverTransport] =
     InMemoryTransport.createLinkedPair();
   const client = new Client(
@@ -70,6 +70,8 @@ describe("mcp tools", () => {
         "list_days",
         "list_habits",
         "record_day",
+        "reindex_embeddings",
+        "search_text",
         "set_day_comment",
         "update_habit",
         "upsert_check_in",

@@ -1,6 +1,8 @@
 interface Env {
   DB: D1Database;
   OAUTH_KV: KVNamespace;
+  AI: Ai;
+  VECTORIZE: Vectorize;
   AUTH_PASSWORD: string;
   SESSION_COOKIE_NAME?: string;
   CF_ACCESS_TEAM_DOMAIN?: string;
@@ -16,6 +18,8 @@ declare namespace Cloudflare {
   interface Env {
     DB: D1Database;
     OAUTH_KV: KVNamespace;
+    AI: Ai;
+    VECTORIZE: Vectorize;
     AUTH_PASSWORD: string;
     SESSION_COOKIE_NAME?: string;
     CF_ACCESS_TEAM_DOMAIN?: string;

@@ -18,6 +18,12 @@ npm run deploy             # wrangler deploy
 
 Local setup: `cp .dev.vars.example .dev.vars` and set `AUTH_PASSWORD` before `npm run dev`.
 
+One-off Vectorize index creation (required before first deploy / before search will return anything in prod):
+
+```sh
+npx wrangler vectorize create habit-mcp-text --dimensions=768 --metric=cosine
+```
+
 ## Architecture
 
 This is a single-user **MCP server** running on **Cloudflare Workers + D1**, deployed as a remote connector for claude.ai. Three layers matter:
@@ -26,7 +32,7 @@ This is a single-user **MCP server** running on **Cloudflare Workers + D1**, dep
 
 2. **Auth handler (`src/auth/handler.ts`)** — implements a single-password OAuth 2.1 + PKCE flow. `GET /authorize` renders a login page; `POST /authorize` compares the submitted password against `env.AUTH_PASSWORD` using a SHA-256 timing-safe compare, then calls `OAUTH_PROVIDER.completeAuthorization` with a hard-coded `userId: "owner"`. There is no user table — this is deliberately single-user.
 
-3. **MCP server (`src/tools.ts` + `src/db/*.ts`)** — `buildMcpServer(db)` registers all tools on an `McpServer` from `@modelcontextprotocol/sdk`. Tools are thin wrappers: validate inputs with Zod (`DateStr` enforces ISO `YYYY-MM-DD`), call a `src/db/*.ts` helper, return `ok(data)` or `fail(err)`. The DB helpers own all SQL and domain validation (e.g. `end_date >= start_date`, "not found: …" errors via `ToolError`). Row-to-domain conversion lives in `src/db/schema.ts` (`rowToHabit`, `rowToCheckIn`) — snake_case in SQL, camelCase in domain types; tools re-expose snake_case in their JSON schemas.
+3. **MCP server (`src/tools.ts` + `src/db/*.ts` + `src/vector/*.ts`)** — `buildMcpServer({ db, store, embed })` registers all tools on an `McpServer` from `@modelcontextprotocol/sdk`. Tools are thin wrappers: validate inputs with Zod (`DateStr` enforces ISO `YYYY-MM-DD`), call a `src/db/*.ts` helper, return `ok(data)` or `fail(err)`. The DB helpers own all SQL and domain validation (e.g. `end_date >= start_date`, "not found: …" errors via `ToolError`). Row-to-domain conversion lives in `src/db/schema.ts` (`rowToHabit`, `rowToCheckIn`) — snake_case in SQL, camelCase in domain types; tools re-expose snake_case in their JSON schemas.
 
 ### Data model (`migrations/0001_init.sql`)
 
@@ -36,13 +42,21 @@ This is a single-user **MCP server** running on **Cloudflare Workers + D1**, dep
 
 A "day" in the API is a synthetic join of the `days` row (may be absent ⇒ empty comment) plus all `check_ins` for that date. `listDays` returns only dates that have *either* a comment or at least one check-in.
 
+### Vector search (`src/vector/*.ts`)
+
+All four free-form text fields (`habits.name`, `habits.description`, `days.comment`, `check_ins.note`) are embedded into a Cloudflare Vectorize index (binding `VECTORIZE`) using Workers AI (binding `AI`, model `@cf/baai/bge-base-en-v1.5`, 768-dim, cosine). Vector IDs are deterministic so updates overwrite: `habit:{id}:name`, `habit:{id}:description`, `day:{date}:comment`, `checkin:{habit_id}:{date}:note`. Metadata carries `{ kind, habit_id?, date? }` for filtering and for parsing IDs back into D1 lookups.
+
+Sync is **online, best-effort**: every successful write (`create_habit`, `update_habit`, `set_day_comment`, `upsert_check_in`, `record_day`) upserts the relevant vector(s); deletes (`delete_habit`, `delete_check_in`, `delete_day_comment`) purge them. Empty/null text is deleted from the index rather than stored. Sync failures are logged but **never fail the write** — run `reindex_embeddings` to recover. The `search_text` tool embeds the query, calls `VECTORIZE.query`, and hydrates each match from D1 (silently skipping stale vectors whose source row has been deleted).
+
+In tests, `buildMcpServer` is given an in-memory `VectorStore` and a deterministic hash-based `EmbeddingProvider` from `test/vector-stub.ts` via `testContext()` in `test/helpers.ts`. No Workers AI or Vectorize calls are made offline.
+
 ### Error contract
 
 DB helpers throw `ToolError` for expected failures; `fail()` in `tools.ts` converts any error to `{ content, isError: true }` MCP responses. "not found:" prefix is used to signal missing resources (see `isNotFoundError`).
 
 ## Testing
 
-`vitest.config.ts` uses `@cloudflare/vitest-pool-workers` to run tests inside Miniflare with a real SQLite-backed D1 and in-memory KV. `test/apply-migrations.ts` runs `beforeEach` — it reapplies migrations, truncates all tables, resets `sqlite_sequence`, and clears `OAUTH_KV`. Tests import `env` from `cloudflare:test` and use `test/helpers.ts` (`db()`, `makeHabit()`).
+`vitest.config.ts` uses `@cloudflare/vitest-pool-workers` to run tests inside Miniflare with a real SQLite-backed D1 and in-memory KV. `test/apply-migrations.ts` runs `beforeEach` — it reapplies migrations, truncates all tables, resets `sqlite_sequence`, and clears `OAUTH_KV`. Tests import `env` from `cloudflare:test` and use `test/helpers.ts` (`db()`, `makeHabit()`, `testContext()`).
 
 `AUTH_PASSWORD` is bound to `"test-password"` in the test env.
 

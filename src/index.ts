@@ -3,6 +3,10 @@ import { createMcpHandler } from "agents/mcp";
 
 import { authHandler } from "./auth/handler.js";
 import { buildMcpServer } from "./tools.js";
+import {
+  vectorizeStore,
+  workersAIEmbeddings,
+} from "./vector/cloudflare.js";
 
 function unsafeLocalJwksResponse(env: Env): Response | null {
   if (env.ALLOW_LOCAL_JWKS === "1" && env.ENVIRONMENT === "production") {
@@ -22,7 +26,12 @@ const mcpApiHandler = {
   ): Promise<Response> {
     const bad = unsafeLocalJwksResponse(env);
     if (bad) return bad;
-    const handler = createMcpHandler(buildMcpServer(env.DB), {
+    const server = buildMcpServer({
+      db: env.DB,
+      store: vectorizeStore(env.VECTORIZE),
+      embed: workersAIEmbeddings(env.AI),
+    });
+    const handler = createMcpHandler(server, {
       route: "/mcp",
       enableJsonResponse: true,
     });
