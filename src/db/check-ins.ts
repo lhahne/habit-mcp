@@ -23,6 +23,29 @@ export async function getCheckIn(
   return row ? rowToCheckIn(row) : null;
 }
 
+export async function listCheckInDatesForHabit(
+  db: D1Database,
+  habitId: number,
+): Promise<string[]> {
+  const res = await db
+    .prepare(`SELECT date FROM check_ins WHERE habit_id = ?1`)
+    .bind(habitId)
+    .all<{ date: string }>();
+  return (res.results ?? []).map((r) => r.date);
+}
+
+export async function listAllCheckInsWithNotes(
+  db: D1Database,
+): Promise<CheckIn[]> {
+  const res = await db
+    .prepare(
+      `SELECT * FROM check_ins WHERE note IS NOT NULL AND TRIM(note) <> ''
+       ORDER BY habit_id ASC, date ASC`,
+    )
+    .all<CheckInRow>();
+  return (res.results ?? []).map(rowToCheckIn);
+}
+
 export function buildUpsertCheckInStatement(
   db: D1Database,
   input: UpsertCheckInInput,

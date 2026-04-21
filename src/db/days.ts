@@ -29,6 +29,19 @@ export async function getDay(db: D1Database, date: string): Promise<Day> {
   };
 }
 
+export async function listAllDaysWithComments(
+  db: D1Database,
+): Promise<{ date: string; comment: string }[]> {
+  const res = await db
+    .prepare(
+      `SELECT date, comment FROM days
+       WHERE TRIM(comment) <> ''
+       ORDER BY date ASC`,
+    )
+    .all<{ date: string; comment: string }>();
+  return res.results ?? [];
+}
+
 export async function listDays(
   db: D1Database,
   opts: ListDaysOptions,
