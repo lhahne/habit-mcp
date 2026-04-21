@@ -6,6 +6,9 @@ interface Env {
   CF_ACCESS_TEAM_DOMAIN?: string;
   CF_ACCESS_AUD?: string;
   CF_ACCESS_ALLOWED_EMAIL?: string;
+  ALLOW_LOCAL_JWKS?: string;
+  CF_ACCESS_JWKS_JSON_DEV?: string;
+  ENVIRONMENT?: string;
   OAUTH_PROVIDER: import("@cloudflare/workers-oauth-provider").OAuthHelpers;
 }
 

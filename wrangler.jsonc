@@ -31,5 +31,34 @@
   ],
   "vars": {
     "SESSION_COOKIE_NAME": "habit_mcp_session"
+  },
+  "env": {
+    "e2e": {
+      "d1_databases": [
+        {
+          // Distinct from the production D1 id so accidentally running
+          // `wrangler dev --env e2e` (or migrations) without --local
+          // can't reach the real database.
+          "binding": "DB",
+          "database_name": "habit-mcp-e2e",
+          "database_id": "2753ec17-d000-4219-815f-75d723243b61",
+          "migrations_dir": "migrations"
+        }
+      ],
+      "kv_namespaces": [
+        {
+          // Likewise distinct from the production KV namespace id.
+          "binding": "OAUTH_KV",
+          "id": "2b03bbcc4b0b4da8b3c48db86aded1bd"
+        }
+      ],
+      "vars": {
+        "SESSION_COOKIE_NAME": "habit_mcp_session",
+        "CF_ACCESS_TEAM_DOMAIN": "e2e.local",
+        "CF_ACCESS_AUD": "e2e-aud",
+        "CF_ACCESS_ALLOWED_EMAIL": "owner@example.com",
+        "ALLOW_LOCAL_JWKS": "1"
+      }
+    }
   }
 }

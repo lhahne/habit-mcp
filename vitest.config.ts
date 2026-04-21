@@ -32,5 +32,7 @@ export default defineConfig({
   test: {
     setupFiles: ["./test/apply-migrations.ts"],
     isolate: true,
+    include: ["test/**/*.test.ts"],
+    exclude: ["node_modules/**", "e2e/**", ".wrangler/**"],
   },
 });

@@ -1,5 +1,6 @@
 import { verifyCfAccessJwt } from "./cf-access.js";
 import { renderLoginPage } from "./login.html.js";
+import { handleUiRequest } from "../ui/handler.js";
 
 async function timingSafeEqual(a: string, b: string): Promise<boolean> {
   const enc = new TextEncoder();
@@ -25,6 +26,10 @@ export const authHandler = {
 
     if (url.pathname === "/" || url.pathname === "/health") {
       return Response.json({ ok: true, service: "habit-mcp" });
+    }
+
+    if (url.pathname === "/ui") {
+      return handleUiRequest(request, env);
     }
 
     if (url.pathname !== "/authorize") {
