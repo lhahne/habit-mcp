@@ -9,10 +9,11 @@
   "scripts": {
     "dev": "pnpm build:ui && wrangler dev",
     "deploy": "pnpm build:ui && wrangler deploy",
-    "build:ui": "node scripts/build-ui.mjs",
+    "build:fonts": "node scripts/build-fonts.mjs",
+    "build:ui": "node scripts/build-fonts.mjs && node scripts/build-ui.mjs",
     "migrate:local": "wrangler d1 migrations apply DB --local",
     "migrate:remote": "wrangler d1 migrations apply DB --remote",
-    "typecheck": "tsc --noEmit && tsc --noEmit -p src/ui/client/tsconfig.json",
+    "typecheck": "pnpm build:ui && tsc --noEmit && tsc --noEmit -p src/ui/client/tsconfig.json",
     "test": "pnpm build:ui && vitest run",
     "test:watch": "pnpm build:ui && vitest",
     "test:e2e": "pnpm build:ui && node --experimental-strip-types e2e/prepare.ts && playwright test",
@@ -29,6 +30,8 @@
   "devDependencies": {
     "@cloudflare/vitest-pool-workers": "^0.14.7",
     "@cloudflare/workers-types": "^4.20260418.0",
+    "@fontsource/inter": "^5.2.8",
+    "@fontsource/jetbrains-mono": "^5.2.8",
     "@playwright/test": "^1.59.1",
     "esbuild": "^0.27.7",
     "typescript": "^5.9.0",

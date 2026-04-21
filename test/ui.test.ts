@@ -156,7 +156,7 @@ describe("GET /ui", () => {
     expect(res.status).toBe(400);
   });
 
-  it("returns 400 when the requested range exceeds 366 days", async () => {
+  it("returns 400 when the requested range exceeds 400 days", async () => {
     const jwt = await signAccessJwt({ email: "owner@example.com" });
     const res = await SELF.fetch(
       `${BASE}/ui?from=2024-01-01&to=2026-01-01`,

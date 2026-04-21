@@ -37,7 +37,9 @@ function shiftIso(iso: string, days: number): string {
 // Cap on the requested window. Renders one cell per day and embeds
 // every check-in in that range, so without a cap a hostile or curious
 // `?from=`/`?to=` could trigger a very large DB read and HTML payload.
-const MAX_RANGE_DAYS = 366;
+// The combined 53x7 heatmap needs ~371 days; 400 leaves headroom for
+// Saturday-padding at the grid's trailing edge.
+const MAX_RANGE_DAYS = 400;
 
 function daysBetweenInclusive(from: string, to: string): number {
   const f = new Date(`${from}T00:00:00Z`).getTime();
@@ -60,7 +62,7 @@ export async function handleUiRequest(
   const fromParam = url.searchParams.get("from");
 
   const to = toParam ?? today;
-  const from = fromParam ?? shiftIso(to, -89);
+  const from = fromParam ?? shiftIso(to, -370);
 
   if (!isIsoDate(from) || !isIsoDate(to)) {
     return new Response("Bad Request: invalid date format", {
