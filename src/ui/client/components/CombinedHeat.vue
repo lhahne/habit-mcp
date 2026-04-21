@@ -111,7 +111,7 @@ function cellTooltip(c: HeatCell): string {
             }"
           />
         </div>
-        <span>all 3</span>
+        <span>all {{ HABIT_COLORS.length }}</span>
       </div>
     </div>
 
