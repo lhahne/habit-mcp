@@ -58,7 +58,8 @@ export function renderUiPage(opts: UiPageOptions): string {
     .nav a{padding:.4rem .75rem;border-radius:6px;background:#14171c;color:#e6e8eb;text-decoration:none;font-size:.85rem;border:1px solid #2b2f36}
     .nav a:hover{background:#1a1e25}
     main{display:flex;gap:1.5rem;padding:1.5rem;align-items:flex-start}
-    #grid{display:grid;grid-template-columns:repeat(15,1.6rem);gap:.3rem;flex-shrink:0}
+    .left{display:flex;flex-direction:column;gap:1.5rem;min-width:0;flex-shrink:0}
+    #grid{display:grid;grid-template-rows:repeat(7,1.6rem);grid-auto-flow:column;grid-auto-columns:1.6rem;gap:.3rem}
     .cell{width:1.6rem;height:1.6rem;border-radius:4px;border:0;padding:0;cursor:pointer;background:#14171c;transition:transform .08s}
     .cell:hover{transform:scale(1.15);outline:1px solid #3b82f6}
     .cell.tier-1{background:#0e3b2a}
@@ -67,6 +68,8 @@ export function renderUiPage(opts: UiPageOptions): string {
     .cell.has-comment{outline:1px solid #3b82f6aa}
     .cell.today{box-shadow:inset 0 0 0 2px #f59e0b}
     .cell[aria-pressed="true"]{outline:2px solid #fff}
+    .cell.pad{background:transparent;pointer-events:none;cursor:default}
+    .cell.pad:hover{transform:none;outline:0}
     .legend{display:flex;gap:.5rem;align-items:center;font-size:.8rem;color:#9aa0a6;margin-left:1rem}
     .legend .cell{width:1rem;height:1rem;cursor:default}
     .legend .cell:hover{transform:none;outline:0}
@@ -84,7 +87,18 @@ export function renderUiPage(opts: UiPageOptions): string {
     .habits .status.undone{color:#6b7280}
     #comment{white-space:pre-wrap;overflow-wrap:anywhere;font-family:system-ui,sans-serif;margin:0;color:#e6e8eb;font-size:.95rem;line-height:1.5;background:#0b0c10;padding:1rem;border-radius:8px;max-height:40vh;overflow:auto}
     #comment:empty::before{content:"(no comment)";color:#6b7280;font-style:italic}
-    @media (max-width:900px){main{flex-direction:column}#panel{width:100%;max-height:none}}
+    #recent-days{background:#14171c;border-radius:12px;padding:1rem 1.25rem}
+    #recent-days h2{margin:0 0 .75rem;font-size:1rem}
+    #recent-days ul{list-style:none;padding:0;margin:0;display:flex;flex-direction:column;gap:.25rem}
+    #recent-days li{margin:0}
+    #recent-days .empty{color:#9aa0a6;font-size:.9rem;margin:0}
+    #recent-days button{width:100%;display:grid;grid-template-columns:auto auto 1fr;gap:.75rem;align-items:baseline;padding:.4rem .6rem;border:0;border-radius:6px;background:transparent;color:inherit;text-align:left;cursor:pointer;font:inherit}
+    #recent-days button:hover{background:#1a1e25}
+    #recent-days button[aria-pressed="true"]{background:#1f2937;outline:1px solid #3b82f6}
+    #recent-days .date{font-variant-numeric:tabular-nums;font-size:.9rem}
+    #recent-days .count{color:#9aa0a6;font-size:.85rem;font-variant-numeric:tabular-nums}
+    #recent-days .snippet{color:#9aa0a6;font-size:.85rem;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0}
+    @media (max-width:900px){main{flex-direction:column}.left{width:100%}#panel{width:100%;max-height:none}}
   </style>
 </head>
 <body>
