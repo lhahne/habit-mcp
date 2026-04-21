@@ -55,7 +55,7 @@ export const authHandler = {
     // users saw both the CF Access login and our own password prompt. If
     // the JWT can't be verified (misconfigured secrets, wrong audience,
     // email not on the allowlist), refuse with 401 instead.
-    if (request.headers.get("Cf-Access-Jwt-Assertion")) {
+    if (request.headers.has("Cf-Access-Jwt-Assertion")) {
       const cfAccessEmail = await verifyCfAccessJwt(request, env);
       if (!cfAccessEmail) {
         return new Response(

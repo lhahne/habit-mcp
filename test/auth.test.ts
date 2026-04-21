@@ -266,6 +266,18 @@ describe("OAuth + MCP integration", () => {
       expect(res.status).toBe(401);
       expect(await res.text()).not.toContain("password");
     });
+
+    it("rejects with 401 when the CF Access header is present but empty", async () => {
+      const clientId = await registerClient();
+      const { challenge } = await pkce();
+      const url = authorizeUrl(clientId, challenge);
+
+      const res = await SELF.fetch(url, {
+        headers: { "Cf-Access-Jwt-Assertion": "" },
+      });
+      expect(res.status).toBe(401);
+      expect(await res.text()).not.toContain("password");
+    });
   });
 
   it("completes the OAuth flow and authenticates an MCP call", async () => {
