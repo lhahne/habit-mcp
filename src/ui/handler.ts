@@ -34,6 +34,17 @@ function shiftIso(iso: string, days: number): string {
   return `${y}-${m}-${d}`;
 }
 
+// Cap on the requested window. Renders one cell per day and embeds
+// every check-in in that range, so without a cap a hostile or curious
+// `?from=`/`?to=` could trigger a very large DB read and HTML payload.
+const MAX_RANGE_DAYS = 366;
+
+function daysBetweenInclusive(from: string, to: string): number {
+  const f = new Date(`${from}T00:00:00Z`).getTime();
+  const t = new Date(`${to}T00:00:00Z`).getTime();
+  return Math.round((t - f) / 86_400_000) + 1;
+}
+
 export async function handleUiRequest(
   request: Request,
   env: Env,
@@ -62,6 +73,12 @@ export async function handleUiRequest(
       status: 400,
       headers: TEXT_HEADERS,
     });
+  }
+  if (daysBetweenInclusive(from, to) > MAX_RANGE_DAYS) {
+    return new Response(
+      `Bad Request: range exceeds ${MAX_RANGE_DAYS} days`,
+      { status: 400, headers: TEXT_HEADERS },
+    );
   }
 
   const [habits, days] = await Promise.all([

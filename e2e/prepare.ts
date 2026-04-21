@@ -1,11 +1,12 @@
-// Runs once before `playwright test`. Wipes local Wrangler state so each
-// e2e run starts from a clean DB, generates a fresh signing key, writes the
-// public JWKS into .dev.vars.e2e (loaded by `wrangler dev --env e2e`), and
-// re-applies migrations against the freshly created local D1.
+// Runs once before `playwright test`. Wipes only the e2e-scoped local
+// Wrangler state so each e2e run starts from a clean DB, generates a
+// fresh signing key, writes the public JWKS into .dev.vars.e2e (loaded
+// by `wrangler dev --env e2e`), and re-applies migrations against the
+// freshly created local D1.
 //
 // Kept as a separate `node` step (not a Playwright globalSetup) because
-// Playwright launches the webServer concurrently with globalSetup, which
-// races our `rm .wrangler/` against wrangler dev's bundle directory.
+// Playwright launches the webServer concurrently with globalSetup,
+// which would race our cleanup against wrangler dev's bundle directory.
 
 import { spawn } from "node:child_process";
 import { mkdir, rm, writeFile } from "node:fs/promises";
@@ -16,6 +17,12 @@ import { exportJWK, generateKeyPair } from "jose";
 const here = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(here, "..");
 
+// Use a dedicated persistence root for e2e so cleanup never touches the
+// dev `.wrangler/` dir. Both `wrangler dev --env e2e` (in
+// playwright.config.ts) and the migrations apply below pass
+// `--persist-to <PERSIST_DIR>`.
+const PERSIST_DIR = path.join(repoRoot, ".wrangler-e2e");
+
 function run(cmd: string, args: string[]): Promise<void> {
   return new Promise((resolve, reject) => {
     const p = spawn(cmd, args, {
@@ -24,6 +31,9 @@ function run(cmd: string, args: string[]): Promise<void> {
       env: { ...process.env, CI: "1" },
     });
     let err = "";
+    // Drain both pipes so a chatty child can't fill its OS pipe buffer
+    // and stall the spawn.
+    p.stdout.on("data", () => {});
     p.stderr.on("data", (b) => {
       err += b.toString();
     });
@@ -36,7 +46,7 @@ function run(cmd: string, args: string[]): Promise<void> {
 }
 
 async function main(): Promise<void> {
-  await rm(path.join(repoRoot, ".wrangler"), { recursive: true, force: true });
+  await rm(PERSIST_DIR, { recursive: true, force: true });
 
   const { publicKey, privateKey } = await generateKeyPair("RS256", {
     extractable: true,
@@ -71,6 +81,8 @@ async function main(): Promise<void> {
     "--env",
     "e2e",
     "--local",
+    "--persist-to",
+    PERSIST_DIR,
   ]);
 }
 

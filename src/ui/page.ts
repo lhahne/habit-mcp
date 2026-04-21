@@ -95,7 +95,7 @@ export function renderUiPage(opts: UiPageOptions): string {
     </nav>
   </header>
   <main>
-    <div id="grid" role="grid" aria-label="Check-in heatmap"></div>
+    <div id="grid" aria-label="Check-in heatmap"></div>
     <section id="panel" aria-live="polite">
       <h2 id="panel-date"></h2>
       <pre id="comment"></pre>

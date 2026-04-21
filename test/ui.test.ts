@@ -156,6 +156,16 @@ describe("GET /ui", () => {
     expect(res.status).toBe(400);
   });
 
+  it("returns 400 when the requested range exceeds 366 days", async () => {
+    const jwt = await signAccessJwt({ email: "owner@example.com" });
+    const res = await SELF.fetch(
+      `${BASE}/ui?from=2024-01-01&to=2026-01-01`,
+      { headers: { "Cf-Access-Jwt-Assertion": jwt } },
+    );
+    expect(res.status).toBe(400);
+    expect(await res.text()).toContain("range exceeds");
+  });
+
   it("rejects ALLOW_LOCAL_JWKS=1 when ENVIRONMENT=production", async () => {
     const mut = testEnv as unknown as Record<string, string | undefined>;
     const origAllow = mut.ALLOW_LOCAL_JWKS;

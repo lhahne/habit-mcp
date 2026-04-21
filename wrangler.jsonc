@@ -36,16 +36,20 @@
     "e2e": {
       "d1_databases": [
         {
+          // Distinct from the production D1 id so accidentally running
+          // `wrangler dev --env e2e` (or migrations) without --local
+          // can't reach the real database.
           "binding": "DB",
           "database_name": "habit-mcp-e2e",
-          "database_id": "f544cb02-a6b4-4bdd-8534-7c0e8ab60bba",
+          "database_id": "2753ec17-d000-4219-815f-75d723243b61",
           "migrations_dir": "migrations"
         }
       ],
       "kv_namespaces": [
         {
+          // Likewise distinct from the production KV namespace id.
           "binding": "OAUTH_KV",
-          "id": "270516a3ae054d3582f3afa1cf0f80c2"
+          "id": "2b03bbcc4b0b4da8b3c48db86aded1bd"
         }
       ],
       "vars": {
