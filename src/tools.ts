@@ -12,7 +12,6 @@ import {
   buildUpsertCheckInStatement,
   deleteCheckIn,
   getCheckIn,
-  listAllCheckInsWithNotes,
   listCheckInDatesForHabit,
   upsertCheckIn,
 } from "./db/check-ins.js";
@@ -20,7 +19,6 @@ import {
   buildSetDayCommentStatement,
   deleteDayComment,
   getDay,
-  listAllDaysWithComments,
   listDays,
   setDayComment,
 } from "./db/days.js";
@@ -35,22 +33,19 @@ import {
 } from "./vector/types.js";
 import {
   bestEffort,
+  decodeCursor,
+  encodeCursor,
+  freshCursor,
   parseVectorId,
   purgeCheckIn,
   purgeDayComment,
   purgeHabit,
-  purgeSource,
-  reindexSource,
-  sourceIdForCheckInNote,
-  sourceIdForDayComment,
-  sourceIdForHabitDescription,
-  sourceIdForHabitName,
+  reindexStep,
   syncCheckInNote,
   syncDayComment,
   syncHabit,
   type SyncCtx,
 } from "./vector/sync.js";
-import { listAllChunkSources } from "./db/text-chunks.js";
 
 const DateStr = z
   .string()
@@ -90,7 +85,7 @@ export function buildMcpServer(ctx: McpContext): McpServer {
 
   const server = new McpServer(
     { name: "habit-mcp", version: "0.1.0" },
-    { capabilities: { tools: {} } },
+    { capabilities: { tools: {}, prompts: {} } },
   );
 
   server.registerTool(
@@ -520,99 +515,71 @@ export function buildMcpServer(ctx: McpContext): McpServer {
   server.registerTool(
     "reindex_embeddings",
     {
-      title: "Rebuild vector index",
+      title: "Rebuild vector index (paginated)",
       description:
-        "Recompute and upsert embeddings for all habit names, descriptions, day comments, and check-in notes. Long fields are chunked. Safe to call anytime; deletes orphaned chunks left over from previous syncs.",
-      inputSchema: {},
+        "Recompute embeddings for habit names, descriptions, day comments, and check-in notes in small batches to stay under the per-invocation subrequest limit. Omit `cursor` on the first call. If the response has `done: false`, call again with `{ cursor: <next_cursor> }` until `done: true`. Also deletes orphaned chunk vectors. Idempotent.",
+      inputSchema: {
+        cursor: z.string().optional(),
+        limit: z.number().int().min(0).max(25).optional(),
+      },
       annotations: { idempotentHint: true },
     },
-    async () => {
+    async ({ cursor, limit }) => {
       try {
-        const habits = await listHabits(db);
-        const days = await listAllDaysWithComments(db);
-        const notes = await listAllCheckInsWithNotes(db);
-
-        let habitNameSources = 0;
-        let habitDescriptionSources = 0;
-        let dayCommentSources = 0;
-        let checkInNoteSources = 0;
-        let totalChunks = 0;
-        const touched = new Set<string>();
-
-        for (const h of habits) {
-          const nameId = sourceIdForHabitName(h.id);
-          const nameChunks = await reindexSource(sctx, nameId, h.name, () => ({
-            kind: "habit_name",
-            habit_id: h.id,
-          }));
-          touched.add(nameId);
-          if (nameChunks > 0) {
-            habitNameSources++;
-            totalChunks += nameChunks;
-          }
-          const descId = sourceIdForHabitDescription(h.id);
-          const descChunks = await reindexSource(
-            sctx,
-            descId,
-            h.description,
-            () => ({ kind: "habit_description", habit_id: h.id }),
-          );
-          touched.add(descId);
-          if (descChunks > 0) {
-            habitDescriptionSources++;
-            totalChunks += descChunks;
-          }
-        }
-        for (const d of days) {
-          const id = sourceIdForDayComment(d.date);
-          const n = await reindexSource(sctx, id, d.comment, () => ({
-            kind: "day_comment",
-            date: d.date,
-          }));
-          touched.add(id);
-          if (n > 0) {
-            dayCommentSources++;
-            totalChunks += n;
-          }
-        }
-        for (const ci of notes) {
-          const id = sourceIdForCheckInNote(ci.habitId, ci.date);
-          const n = await reindexSource(sctx, id, ci.note, () => ({
-            kind: "check_in_note",
-            habit_id: ci.habitId,
-            date: ci.date,
-          }));
-          touched.add(id);
-          if (n > 0) {
-            checkInNoteSources++;
-            totalChunks += n;
-          }
-        }
-
-        // Purge any text_chunks rows (and their vectors) whose source_id
-        // wasn't touched above - i.e. orphans left by deleted rows or by
-        // prior sync failures that never reached deleteChunkCount.
-        const allSources = await listAllChunkSources(db);
-        let orphansRemoved = 0;
-        for (const { source_id } of allSources) {
-          if (touched.has(source_id)) continue;
-          await purgeSource(sctx, source_id);
-          orphansRemoved++;
-        }
-
-        return ok({
-          reindexed: {
-            habit_names: habitNameSources,
-            habit_descriptions: habitDescriptionSources,
-            day_comments: dayCommentSources,
-            check_in_notes: checkInNoteSources,
-            total_chunks: totalChunks,
-            orphans_removed: orphansRemoved,
-          },
-        });
+        const startCursor = cursor ? decodeCursor(cursor) : freshCursor();
+        const effectiveLimit = limit ?? 6;
+        const { next, processed, phase } = await reindexStep(
+          sctx,
+          startCursor,
+          effectiveLimit,
+        );
+        const done = next.phase === "done";
+        const payload: Record<string, unknown> = {
+          done,
+          phase,
+          processed,
+          totals: next.totals,
+        };
+        if (!done) payload.next_cursor = encodeCursor(next);
+        return ok(payload);
       } catch (e) {
         return fail(e);
       }
+    },
+  );
+
+  server.registerPrompt(
+    "run_full_reindex",
+    {
+      title: "Rebuild vector index (paginated)",
+      description:
+        "Drive reindex_embeddings in a loop until done, staying under the per-invocation subrequest limit. Use for first-deploy indexing, after changing embedding dimensions, or whenever a full rebuild is requested.",
+      argsSchema: {
+        limit: z.string().optional(),
+      },
+    },
+    ({ limit }) => {
+      const firstCall = limit ? `\`{ limit: ${limit} }\`` : "`{}`";
+      const subsequent = limit
+        ? ` and \`{ limit: ${limit} }\``
+        : " (optionally raising `limit` up to 25 if prior calls succeed)";
+      const text = [
+        "Rebuild the full vector index by calling the `reindex_embeddings` tool in a loop:",
+        "",
+        `1. First call: pass ${firstCall}.`,
+        `2. On each response, if \`done === false\`, call again with \`{ cursor: <next_cursor> }\`${subsequent}.`,
+        "3. If a call returns `isError: true` with a subrequest-limit message, retry the same cursor with `limit` halved (floor 3).",
+        "4. Between calls, print one progress line: `phase=<phase> processed=<n> totals.chunks=<n>`.",
+        "5. When `done === true`, print the final `totals` and stop.",
+      ].join("\n");
+      return {
+        messages: [
+          {
+            role: "user" as const,
+            content: { type: "text" as const, text },
+          },
+        ],
+      };
     },
   );
 
