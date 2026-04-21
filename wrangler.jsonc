@@ -35,7 +35,7 @@
   "vectorize": [
     {
       "binding": "VECTORIZE",
-      "index_name": "habit-mcp-text"
+      "index_name": "habit-mcp-text-1024"
     }
   ],
   "vars": {
