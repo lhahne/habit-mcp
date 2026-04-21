@@ -515,6 +515,52 @@ describe("best-effort sync", () => {
   });
 });
 
+interface ReindexTotals {
+  habit_names: number;
+  habit_descriptions: number;
+  day_comments: number;
+  check_in_notes: number;
+  chunks_upserted: number;
+  orphans_removed: number;
+}
+
+interface ReindexResponse {
+  done: boolean;
+  next_cursor?: string;
+  phase: string;
+  processed: ReindexTotals;
+  totals: ReindexTotals;
+}
+
+async function runReindex(
+  client: Client,
+  args: { limit?: number } = {},
+): Promise<{ totals: ReindexTotals; phases: string[]; calls: number }> {
+  const phases: string[] = [];
+  let cursor: string | undefined;
+  let calls = 0;
+  // Safety cap so a broken loop doesn't spin forever in tests.
+  while (calls < 100) {
+    calls++;
+    const payload: Record<string, unknown> = {};
+    if (cursor !== undefined) payload.cursor = cursor;
+    if (args.limit !== undefined) payload.limit = args.limit;
+    const res = await call<ReindexResponse>(client, "reindex_embeddings", payload);
+    if (res.isError) {
+      throw new Error(`reindex_embeddings failed: ${JSON.stringify(res.raw)}`);
+    }
+    phases.push(res.data.phase);
+    if (res.data.done) {
+      return { totals: res.data.totals, phases, calls };
+    }
+    cursor = res.data.next_cursor;
+    if (cursor === undefined) {
+      throw new Error("next_cursor missing while done=false");
+    }
+  }
+  throw new Error("reindex loop did not terminate within 100 calls");
+}
+
 describe("reindex_embeddings", () => {
   it("rebuilds embeddings from existing D1 rows and counts sources + chunks", async () => {
     const store = inMemoryStore();
@@ -557,23 +603,13 @@ describe("reindex_embeddings", () => {
 
     const { client, close } = await connect({ store, embed });
     try {
-      const res = await call<{
-        reindexed: {
-          habit_names: number;
-          habit_descriptions: number;
-          day_comments: number;
-          check_in_notes: number;
-          total_chunks: number;
-          orphans_removed: number;
-        };
-      }>(client, "reindex_embeddings");
-      expect(res.isError).toBe(false);
-      expect(res.data.reindexed).toEqual({
+      const { totals } = await runReindex(client);
+      expect(totals).toEqual({
         habit_names: 2,
         habit_descriptions: 1,
         day_comments: 1,
         check_in_notes: 1,
-        total_chunks: 5,
+        chunks_upserted: 5,
         orphans_removed: 0,
       });
       expect(store.vectors.size).toBe(5);
@@ -604,8 +640,6 @@ describe("reindex_embeddings", () => {
         note: "did the thing",
       });
 
-      // Bypass sync hooks: delete D1 rows directly so vectors + text_chunks
-      // rows remain as orphans.
       await db()
         .prepare("DELETE FROM habits WHERE id = ?1")
         .bind(habitId)
@@ -614,8 +648,6 @@ describe("reindex_embeddings", () => {
         .prepare("DELETE FROM days WHERE date = ?1")
         .bind("2026-09-10")
         .run();
-      // check_ins cascaded with the habit delete, but its text_chunks row
-      // and vectors still linger.
 
       const orphanSources = [
         `habit:${habitId}:name`,
@@ -628,18 +660,8 @@ describe("reindex_embeddings", () => {
         expect(vectorIdsForSource(store, s).length).toBeGreaterThan(0);
       }
 
-      const res = await call<{
-        reindexed: {
-          habit_names: number;
-          habit_descriptions: number;
-          day_comments: number;
-          check_in_notes: number;
-          total_chunks: number;
-          orphans_removed: number;
-        };
-      }>(client, "reindex_embeddings");
-      expect(res.isError).toBe(false);
-      expect(res.data.reindexed.orphans_removed).toBe(orphanSources.length);
+      const { totals } = await runReindex(client);
+      expect(totals.orphans_removed).toBe(orphanSources.length);
 
       for (const s of orphanSources) {
         expect(await chunkCount(s)).toBe(0);
@@ -665,20 +687,276 @@ describe("reindex_embeddings", () => {
       const longCount = vectorIdsForSource(store, sourceId).length;
       expect(longCount).toBeGreaterThan(1);
 
-      // Mutate D1 directly to a short comment, bypassing the sync hook.
       await db()
         .prepare(`UPDATE days SET comment = ?1 WHERE date = ?2`)
         .bind("now short", "2026-09-01")
         .run();
-      // The vector store still has the long-form orphans.
       expect(vectorIdsForSource(store, sourceId).length).toBe(longCount);
 
-      const res = await call<{
-        reindexed: { day_comments: number; total_chunks: number };
-      }>(client, "reindex_embeddings");
-      expect(res.isError).toBe(false);
+      await runReindex(client);
       expect(vectorIdsForSource(store, sourceId)).toEqual([`${sourceId}:0`]);
       expect(await chunkCount(sourceId)).toBe(1);
+    } finally {
+      await close();
+    }
+  });
+
+  it("paginated run reaches done and matches a single-shot run", async () => {
+    const store = inMemoryStore();
+    const embed = fakeEmbeddings();
+
+    for (let i = 0; i < 15; i++) {
+      await db()
+        .prepare(
+          `INSERT INTO habits (name, description, start_date) VALUES (?1, ?2, ?3)`,
+        )
+        .bind(`Habit ${i}`, `desc ${i}`, "2026-01-01")
+        .run();
+    }
+    for (let i = 0; i < 10; i++) {
+      const day = `2026-05-${String(i + 1).padStart(2, "0")}`;
+      await db()
+        .prepare(`INSERT INTO days (date, comment) VALUES (?1, ?2)`)
+        .bind(day, `comment ${i}`)
+        .run();
+    }
+    for (let i = 1; i <= 10; i++) {
+      await db()
+        .prepare(
+          `INSERT INTO check_ins (habit_id, date, done, note) VALUES (?1, ?2, 1, ?3)`,
+        )
+        .bind(i, "2026-06-01", `note ${i}`)
+        .run();
+    }
+
+    const { client, close } = await connect({ store, embed });
+    try {
+      const { totals, calls, phases } = await runReindex(client, { limit: 3 });
+      expect(calls).toBeGreaterThan(1);
+      expect(phases).toContain("habits");
+      expect(phases).toContain("days");
+      expect(phases).toContain("check_ins");
+      expect(phases).toContain("orphans");
+      expect(totals.habit_names).toBe(15);
+      expect(totals.habit_descriptions).toBe(15);
+      expect(totals.day_comments).toBe(10);
+      expect(totals.check_in_notes).toBe(10);
+      expect(totals.chunks_upserted).toBe(15 + 15 + 10 + 10);
+      expect(totals.orphans_removed).toBe(0);
+      expect(store.vectors.size).toBe(15 + 15 + 10 + 10);
+    } finally {
+      await close();
+    }
+  });
+
+  it("reports phases in order habits -> days -> check_ins -> orphans -> done", async () => {
+    const store = inMemoryStore();
+    const embed = fakeEmbeddings();
+
+    await db()
+      .prepare(
+        `INSERT INTO habits (name, description, start_date) VALUES (?1, ?2, ?3)`,
+      )
+      .bind("One", "d", "2026-01-01")
+      .run();
+    await db()
+      .prepare(`INSERT INTO days (date, comment) VALUES (?1, ?2)`)
+      .bind("2026-01-01", "c")
+      .run();
+    await db()
+      .prepare(
+        `INSERT INTO check_ins (habit_id, date, done, note) VALUES (?1, ?2, 1, ?3)`,
+      )
+      .bind(1, "2026-01-01", "n")
+      .run();
+
+    const { client, close } = await connect({ store, embed });
+    try {
+      const { phases } = await runReindex(client, { limit: 1 });
+      const phaseIndex = (p: string) => phases.indexOf(p);
+      expect(phaseIndex("habits")).toBeGreaterThanOrEqual(0);
+      expect(phaseIndex("days")).toBeGreaterThan(phaseIndex("habits"));
+      expect(phaseIndex("check_ins")).toBeGreaterThan(phaseIndex("days"));
+      expect(phaseIndex("orphans")).toBeGreaterThan(phaseIndex("check_ins"));
+    } finally {
+      await close();
+    }
+  });
+
+  it("limit=0 is a no-op that echoes the cursor and advances nothing", async () => {
+    const { client, close } = await connect();
+    try {
+      const first = await call<ReindexResponse>(client, "reindex_embeddings", {
+        limit: 0,
+      });
+      expect(first.isError).toBe(false);
+      expect(first.data.done).toBe(false);
+      expect(first.data.phase).toBe("habits");
+      expect(first.data.processed).toEqual({
+        habit_names: 0,
+        habit_descriptions: 0,
+        day_comments: 0,
+        check_in_notes: 0,
+        chunks_upserted: 0,
+        orphans_removed: 0,
+      });
+      expect(first.data.next_cursor).toBeDefined();
+
+      const second = await call<ReindexResponse>(client, "reindex_embeddings", {
+        cursor: first.data.next_cursor,
+        limit: 0,
+      });
+      expect(second.isError).toBe(false);
+      expect(second.data.phase).toBe("habits");
+      expect(second.data.next_cursor).toBe(first.data.next_cursor);
+    } finally {
+      await close();
+    }
+  });
+
+  it("rejects malformed cursor with isError", async () => {
+    const { client, close } = await connect();
+    try {
+      const res = await call(client, "reindex_embeddings", {
+        cursor: "not-a-real-cursor",
+      });
+      expect(res.isError).toBe(true);
+      const text = (res.raw.content?.[0] as { text?: string } | undefined)?.text ?? "";
+      expect(text.toLowerCase()).toContain("invalid cursor");
+    } finally {
+      await close();
+    }
+  });
+
+  it("clamps a cursor whose offset is past the end of its phase", async () => {
+    await db()
+      .prepare(
+        `INSERT INTO habits (name, description, start_date) VALUES (?1, ?2, ?3)`,
+      )
+      .bind("Just one", null, "2026-01-01")
+      .run();
+
+    const { client, close } = await connect();
+    try {
+      const stale = btoa(
+        JSON.stringify({
+          v: 1,
+          phase: "days",
+          offset: 9999,
+          totals: {
+            habit_names: 0,
+            habit_descriptions: 0,
+            day_comments: 0,
+            check_in_notes: 0,
+            chunks_upserted: 0,
+            orphans_removed: 0,
+          },
+        }),
+      )
+        .replace(/\+/g, "-")
+        .replace(/\//g, "_")
+        .replace(/=+$/, "");
+
+      const res = await call<ReindexResponse>(client, "reindex_embeddings", {
+        cursor: stale,
+      });
+      expect(res.isError).toBe(false);
+      expect(res.data.phase).toBe("days");
+      expect(res.data.processed.day_comments).toBe(0);
+      expect(res.data.done).toBe(false);
+      expect(res.data.next_cursor).toBeDefined();
+    } finally {
+      await close();
+    }
+  });
+
+  it("survives rows added mid-reindex without mis-purging them as orphans", async () => {
+    const store = inMemoryStore();
+    const embed = fakeEmbeddings();
+
+    for (let i = 0; i < 3; i++) {
+      await db()
+        .prepare(
+          `INSERT INTO habits (name, description, start_date) VALUES (?1, ?2, ?3)`,
+        )
+        .bind(`Pre ${i}`, null, "2026-01-01")
+        .run();
+    }
+
+    const { client, close } = await connect({ store, embed });
+    try {
+      const first = await call<ReindexResponse>(client, "reindex_embeddings", {
+        limit: 2,
+      });
+      expect(first.isError).toBe(false);
+
+      const newHabit = await call<{ habit: { id: number } }>(
+        client,
+        "create_habit",
+        { name: "Added mid-run", start_date: "2026-01-01" },
+      );
+      const newId = newHabit.data.habit.id;
+      expect(await chunkCount(`habit:${newId}:name`)).toBe(1);
+
+      let cursor = first.data.next_cursor;
+      while (cursor) {
+        const next = await call<ReindexResponse>(client, "reindex_embeddings", {
+          cursor,
+          limit: 5,
+        });
+        expect(next.isError).toBe(false);
+        if (next.data.done) break;
+        cursor = next.data.next_cursor;
+      }
+
+      expect(await chunkCount(`habit:${newId}:name`)).toBe(1);
+      expect(store.vectors.has(`habit:${newId}:name:0`)).toBe(true);
+    } finally {
+      await close();
+    }
+  });
+});
+
+describe("reindex_embeddings prompt", () => {
+  it("lists run_full_reindex in prompts/list", async () => {
+    const { client, close } = await connect();
+    try {
+      const res = await client.listPrompts();
+      const names = res.prompts.map((p) => p.name);
+      expect(names).toContain("run_full_reindex");
+    } finally {
+      await close();
+    }
+  });
+
+  it("getPrompt returns a user message referencing reindex_embeddings and cursor", async () => {
+    const { client, close } = await connect();
+    try {
+      const res = await client.getPrompt({
+        name: "run_full_reindex",
+        arguments: {},
+      });
+      expect(res.messages.length).toBeGreaterThan(0);
+      const first = res.messages[0]!;
+      expect(first.role).toBe("user");
+      expect(first.content.type).toBe("text");
+      const text = (first.content as { text: string }).text;
+      expect(text).toContain("reindex_embeddings");
+      expect(text).toContain("cursor");
+    } finally {
+      await close();
+    }
+  });
+
+  it("propagates the limit argument into the rendered prompt", async () => {
+    const { client, close } = await connect();
+    try {
+      const res = await client.getPrompt({
+        name: "run_full_reindex",
+        arguments: { limit: "3" },
+      });
+      const text = (res.messages[0]!.content as { text: string }).text;
+      expect(text).toContain("limit: 3");
     } finally {
       await close();
     }
