@@ -1,11 +1,24 @@
 // Client-side Vue app for /ui. Bundled by scripts/build-ui.mjs into
 // src/ui/client-bundle.gen.ts and inlined into the HTML response.
 //
+// Written with render functions (h()) rather than template strings so
+// the runtime-only Vue build suffices — the response CSP forbids
+// 'unsafe-eval', which would be required by Vue's runtime template
+// compiler.
+//
 // The DOM this produces intentionally matches the old vanilla-JS
 // version (ids, classes, data-* attrs, aria-pressed) so existing unit
 // and Playwright tests continue to target the same selectors.
 
-import { computed, createApp, defineComponent, ref } from "vue";
+import {
+  Fragment,
+  computed,
+  createApp,
+  defineComponent,
+  h,
+  ref,
+  type VNode,
+} from "vue";
 
 interface UiHabit {
   id: string;
@@ -126,23 +139,22 @@ const App = defineComponent({
       for (const c of day.checkIns) ciByHabit.set(c.habitId, c);
       return props.data.habits
         .filter(
-          (h) =>
-            h.startDate <= iso && (h.endDate === null || h.endDate >= iso),
+          (hab) =>
+            hab.startDate <= iso &&
+            (hab.endDate === null || hab.endDate >= iso),
         )
-        .map((h) => {
-          const ci = ciByHabit.get(h.id);
+        .map((hab) => {
+          const ci = ciByHabit.get(hab.id);
           return {
-            id: h.id,
-            name: h.name,
+            id: hab.id,
+            name: hab.name,
             done: ci ? ci.done : false,
             note: ci?.note ?? null,
           };
         });
     });
 
-    const range = computed(
-      () => `${props.data.from} → ${props.data.to}`,
-    );
+    const range = computed(() => `${props.data.from} → ${props.data.to}`);
 
     const prevHref = computed(() => {
       const from = addDays(parseIso(props.data.from), -90);
@@ -156,62 +168,80 @@ const App = defineComponent({
       return `?from=${toIso(from)}&to=${toIso(to)}`;
     });
 
-    return {
-      selected,
-      cells,
-      selectedDay,
-      visibleHabits,
-      range,
-      prevHref,
-      nextHref,
+    return () => {
+      const header = h("header", null, [
+        h("h1", null, "habit-mcp"),
+        h("span", { class: "range", id: "range-label" }, range.value),
+        h("div", { class: "legend", "aria-hidden": "true" }, [
+          h("span", null, "less"),
+          h("span", { class: "cell tier-0" }),
+          h("span", { class: "cell tier-1" }),
+          h("span", { class: "cell tier-2" }),
+          h("span", { class: "cell tier-3" }),
+          h("span", null, "more"),
+        ]),
+        h("nav", { class: "nav" }, [
+          h("a", { id: "prev", href: prevHref.value }, "← Prev 90"),
+          h("a", { id: "next", href: nextHref.value }, "Next 90 →"),
+        ]),
+      ]);
+
+      const gridChildren = cells.value.map((c) =>
+        h("button", {
+          key: c.iso,
+          type: "button",
+          class: [
+            "cell",
+            `tier-${c.tier}`,
+            { "has-comment": c.hasComment, today: c.isToday },
+          ],
+          "data-date": c.iso,
+          "aria-label": `${c.iso} — ${c.tier} done`,
+          "aria-pressed": selected.value === c.iso ? "true" : "false",
+          onClick: () => {
+            selected.value = c.iso;
+          },
+        }),
+      );
+
+      const habitItems: VNode[] = visibleHabits.value.map((hab) => {
+        const body: VNode[] = [h("div", { class: "name" }, hab.name)];
+        if (hab.note) {
+          body.push(h("div", { class: "note" }, hab.note));
+        }
+        return h("li", { key: hab.id }, [
+          h(
+            "span",
+            { class: ["status", hab.done ? "done" : "undone"] },
+            hab.done ? "✓" : "·",
+          ),
+          h("div", { class: "habit-body" }, body),
+        ]);
+      });
+
+      const panel = h(
+        "section",
+        {
+          id: "panel",
+          class: { open: selected.value !== null },
+          "aria-live": "polite",
+        },
+        [
+          h("h2", { id: "panel-date" }, selected.value ?? ""),
+          h("pre", { id: "comment" }, selectedDay.value?.comment ?? ""),
+          h("ul", { class: "habits", id: "habits" }, habitItems),
+        ],
+      );
+
+      const grid = h(
+        "div",
+        { id: "grid", "aria-label": "Check-in heatmap" },
+        gridChildren,
+      );
+
+      return h(Fragment, null, [header, h("main", null, [grid, panel])]);
     };
   },
-  template: `
-    <header>
-      <h1>habit-mcp</h1>
-      <span class="range" id="range-label">{{ range }}</span>
-      <div class="legend" aria-hidden="true">
-        <span>less</span>
-        <span class="cell tier-0"></span>
-        <span class="cell tier-1"></span>
-        <span class="cell tier-2"></span>
-        <span class="cell tier-3"></span>
-        <span>more</span>
-      </div>
-      <nav class="nav">
-        <a id="prev" :href="prevHref">&larr; Prev 90</a>
-        <a id="next" :href="nextHref">Next 90 &rarr;</a>
-      </nav>
-    </header>
-    <main>
-      <div id="grid" aria-label="Check-in heatmap">
-        <button
-          v-for="c in cells"
-          :key="c.iso"
-          type="button"
-          class="cell"
-          :class="['tier-' + c.tier, { 'has-comment': c.hasComment, 'today': c.isToday }]"
-          :data-date="c.iso"
-          :aria-label="c.iso + ' — ' + c.tier + ' done'"
-          :aria-pressed="selected === c.iso ? 'true' : 'false'"
-          @click="selected = c.iso"
-        ></button>
-      </div>
-      <section id="panel" :class="{ open: selected !== null }" aria-live="polite">
-        <h2 id="panel-date">{{ selected ?? '' }}</h2>
-        <pre id="comment">{{ selectedDay && selectedDay.comment ? selectedDay.comment : '' }}</pre>
-        <ul class="habits" id="habits">
-          <li v-for="h in visibleHabits" :key="h.id">
-            <span class="status" :class="h.done ? 'done' : 'undone'">{{ h.done ? '✓' : '·' }}</span>
-            <div class="habit-body">
-              <div class="name">{{ h.name }}</div>
-              <div v-if="h.note" class="note">{{ h.note }}</div>
-            </div>
-          </li>
-        </ul>
-      </section>
-    </main>
-  `,
 });
 
 const dataEl = document.getElementById("ui-data");
