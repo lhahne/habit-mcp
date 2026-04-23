@@ -81,7 +81,11 @@ export async function listDays(
 
   const [daysRes, ciRes] = await Promise.all([
     db
-      .prepare(`SELECT * FROM days WHERE date >= ?1 AND date <= ?2`)
+      .prepare(
+        `SELECT * FROM days
+         WHERE date >= ?1 AND date <= ?2
+           AND (TRIM(comment) <> '' OR weight IS NOT NULL OR TRIM(exercise) <> '')`,
+      )
       .bind(opts.from, opts.to)
       .all<DayRow>(),
     db

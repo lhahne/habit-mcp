@@ -133,6 +133,24 @@ describe("days", () => {
     expect(days[2]!.checkIns).toEqual([]);
   });
 
+  it("listDays omits days whose only field has been cleared and have no check-ins", async () => {
+    // Set then clear: the row physically lingers, but listDays must not surface it.
+    await setDayComment(db(), "2026-09-01", "draft");
+    await deleteDayComment(db(), "2026-09-01");
+
+    await setDayWeight(db(), "2026-09-02", 80);
+    await deleteDayWeight(db(), "2026-09-02");
+
+    await setDayExercise(db(), "2026-09-03", "run");
+    await deleteDayExercise(db(), "2026-09-03");
+
+    // A date with weight still set must remain visible.
+    await setDayWeight(db(), "2026-09-04", 81);
+
+    const days = await listDays(db(), { from: "2026-09-01", to: "2026-09-30" });
+    expect(days.map((d) => d.date)).toEqual(["2026-09-04"]);
+  });
+
   it("listDays rejects invalid dates", async () => {
     await expect(
       listDays(db(), { from: "bogus", to: "2026-01-01" }),

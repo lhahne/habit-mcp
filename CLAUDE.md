@@ -39,7 +39,7 @@ This is a single-user **MCP server** running on **Cloudflare Workers + D1**, dep
 ### Data model (`migrations/0001_init.sql`, `migrations/0003_day_weight_exercise.sql`)
 
 - `habits` — id, name, description, start_date, optional end_date.
-- `days` — one row per date with a free-text `comment`, a nullable `weight` (REAL), and a free-text `exercise` field (primary key is the date). `delete_day_comment` / `delete_day_weight` / `delete_day_exercise` each clear only their own column; the row survives as long as anything is set.
+- `days` — one row per date with a free-text `comment`, a nullable `weight` (REAL), and a free-text `exercise` field (primary key is the date). `delete_day_comment` / `delete_day_weight` / `delete_day_exercise` each clear only their own column; the row itself is never deleted, but `listDays` filters out fully-empty rows so they're invisible to the API once cleared.
 - `check_ins` — composite PK `(habit_id, date)`, `done` as INTEGER 0/1, optional `note`. Cascades on habit delete.
 
 A "day" in the API is a synthetic join of the `days` row (may be absent ⇒ empty comment, null weight, empty exercise) plus all `check_ins` for that date. `listDays` returns only dates that have a `days` row (any field set) or at least one check-in.
