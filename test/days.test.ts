@@ -5,6 +5,8 @@ import {
   deleteDayExercise,
   deleteDayWeight,
   getDay,
+  listAllDaysWithComments,
+  listAllDaysWithExercise,
   listDays,
   setDayComment,
   setDayExercise,
@@ -149,6 +151,29 @@ describe("days", () => {
 
     const days = await listDays(db(), { from: "2026-09-01", to: "2026-09-30" });
     expect(days.map((d) => d.date)).toEqual(["2026-09-04"]);
+  });
+
+  it("listAllDaysWithComments / listAllDaysWithExercise filter empty rows and sort by date", async () => {
+    await setDayComment(db(), "2026-10-02", "second");
+    await setDayComment(db(), "2026-10-01", "first");
+    await setDayExercise(db(), "2026-10-01", "run");
+    await setDayExercise(db(), "2026-10-03", "swim");
+    // A row with only weight set must NOT appear in either listing.
+    await setDayWeight(db(), "2026-10-04", 80);
+    // A whitespace-only field is treated as empty (TRIM filter).
+    await setDayComment(db(), "2026-10-05", "   ");
+
+    const comments = await listAllDaysWithComments(db());
+    expect(comments).toEqual([
+      { date: "2026-10-01", comment: "first" },
+      { date: "2026-10-02", comment: "second" },
+    ]);
+
+    const exercises = await listAllDaysWithExercise(db());
+    expect(exercises).toEqual([
+      { date: "2026-10-01", exercise: "run" },
+      { date: "2026-10-03", exercise: "swim" },
+    ]);
   });
 
   it("listDays rejects invalid dates", async () => {
