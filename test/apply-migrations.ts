@@ -17,7 +17,12 @@ beforeEach(async () => {
     env.DB.prepare("DELETE FROM days"),
     env.DB.prepare("DELETE FROM habits"),
     env.DB.prepare("DELETE FROM text_chunks"),
-    env.DB.prepare("DELETE FROM sqlite_sequence WHERE name = 'habits'"),
+    env.DB.prepare("DELETE FROM check_ins_history"),
+    env.DB.prepare("DELETE FROM days_history"),
+    env.DB.prepare("DELETE FROM habits_history"),
+    env.DB.prepare(
+      "DELETE FROM sqlite_sequence WHERE name IN ('habits','habits_history','days_history','check_ins_history')",
+    ),
   ]);
   for (const key of await listAll(env.OAUTH_KV)) {
     await env.OAUTH_KV.delete(key);
