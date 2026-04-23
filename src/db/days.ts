@@ -8,6 +8,20 @@ export interface ListDaysOptions {
   to: string;
 }
 
+function emptyDay(date: string): Day {
+  return { date, comment: "", weight: null, exercise: "", checkIns: [] };
+}
+
+function dayFromRow(row: DayRow, checkIns: Day["checkIns"]): Day {
+  return {
+    date: row.date,
+    comment: row.comment,
+    weight: row.weight,
+    exercise: row.exercise,
+    checkIns,
+  };
+}
+
 export async function getDay(db: D1Database, date: string): Promise<Day> {
   assertIsoDate(date, "date");
   const [dayRow, ciRes] = await Promise.all([
@@ -22,11 +36,9 @@ export async function getDay(db: D1Database, date: string): Promise<Day> {
       .bind(date)
       .all<CheckInRow>(),
   ]);
-  return {
-    date,
-    comment: dayRow?.comment ?? "",
-    checkIns: (ciRes.results ?? []).map(rowToCheckIn),
-  };
+  const checkIns = (ciRes.results ?? []).map(rowToCheckIn);
+  if (!dayRow) return { ...emptyDay(date), checkIns };
+  return dayFromRow(dayRow, checkIns);
 }
 
 export async function listAllDaysWithComments(
@@ -39,6 +51,19 @@ export async function listAllDaysWithComments(
        ORDER BY date ASC`,
     )
     .all<{ date: string; comment: string }>();
+  return res.results ?? [];
+}
+
+export async function listAllDaysWithExercise(
+  db: D1Database,
+): Promise<{ date: string; exercise: string }[]> {
+  const res = await db
+    .prepare(
+      `SELECT date, exercise FROM days
+       WHERE TRIM(exercise) <> ''
+       ORDER BY date ASC`,
+    )
+    .all<{ date: string; exercise: string }>();
   return res.results ?? [];
 }
 
@@ -71,12 +96,12 @@ export async function listDays(
 
   const byDate = new Map<string, Day>();
   for (const row of daysRes.results ?? []) {
-    byDate.set(row.date, { date: row.date, comment: row.comment, checkIns: [] });
+    byDate.set(row.date, dayFromRow(row, []));
   }
   for (const row of ciRes.results ?? []) {
     let day = byDate.get(row.date);
     if (!day) {
-      day = { date: row.date, comment: "", checkIns: [] };
+      day = emptyDay(row.date);
       byDate.set(row.date, day);
     }
     day.checkIns.push(rowToCheckIn(row));
@@ -118,8 +143,110 @@ export async function deleteDayComment(
 ): Promise<void> {
   assertIsoDate(date, "date");
   const res = await db
-    .prepare(`DELETE FROM days WHERE date = ?1 RETURNING date`)
-    .bind(date)
+    .prepare(
+      `UPDATE days SET comment = '', updated_at = ?2
+       WHERE date = ?1
+       RETURNING date`,
+    )
+    .bind(date, nowIso())
+    .first<{ date: string }>();
+  if (!res) throw new ToolError(`not found: day ${date}`);
+}
+
+export function buildSetDayWeightStatement(
+  db: D1Database,
+  date: string,
+  weight: number,
+): D1PreparedStatement {
+  assertIsoDate(date, "date");
+  const now = nowIso();
+  return db
+    .prepare(
+      `INSERT INTO days (date, weight, created_at, updated_at)
+       VALUES (?1, ?2, ?3, ?3)
+       ON CONFLICT (date) DO UPDATE SET
+         weight = excluded.weight,
+         updated_at = excluded.updated_at`,
+    )
+    .bind(date, weight, now);
+}
+
+export function buildClearDayWeightStatement(
+  db: D1Database,
+  date: string,
+): D1PreparedStatement {
+  assertIsoDate(date, "date");
+  return db
+    .prepare(
+      `UPDATE days SET weight = NULL, updated_at = ?2 WHERE date = ?1`,
+    )
+    .bind(date, nowIso());
+}
+
+export async function setDayWeight(
+  db: D1Database,
+  date: string,
+  weight: number,
+): Promise<Day> {
+  await buildSetDayWeightStatement(db, date, weight).run();
+  return getDay(db, date);
+}
+
+export async function deleteDayWeight(
+  db: D1Database,
+  date: string,
+): Promise<void> {
+  assertIsoDate(date, "date");
+  const res = await db
+    .prepare(
+      `UPDATE days SET weight = NULL, updated_at = ?2
+       WHERE date = ?1
+       RETURNING date`,
+    )
+    .bind(date, nowIso())
+    .first<{ date: string }>();
+  if (!res) throw new ToolError(`not found: day ${date}`);
+}
+
+export function buildSetDayExerciseStatement(
+  db: D1Database,
+  date: string,
+  exercise: string,
+): D1PreparedStatement {
+  assertIsoDate(date, "date");
+  const now = nowIso();
+  return db
+    .prepare(
+      `INSERT INTO days (date, exercise, created_at, updated_at)
+       VALUES (?1, ?2, ?3, ?3)
+       ON CONFLICT (date) DO UPDATE SET
+         exercise = excluded.exercise,
+         updated_at = excluded.updated_at`,
+    )
+    .bind(date, exercise, now);
+}
+
+export async function setDayExercise(
+  db: D1Database,
+  date: string,
+  exercise: string,
+): Promise<Day> {
+  await buildSetDayExerciseStatement(db, date, exercise).run();
+  return getDay(db, date);
+}
+
+export async function deleteDayExercise(
+  db: D1Database,
+  date: string,
+): Promise<void> {
+  assertIsoDate(date, "date");
+  const res = await db
+    .prepare(
+      `UPDATE days SET exercise = '', updated_at = ?2
+       WHERE date = ?1
+       RETURNING date`,
+    )
+    .bind(date, nowIso())
     .first<{ date: string }>();
   if (!res) throw new ToolError(`not found: day ${date}`);
 }

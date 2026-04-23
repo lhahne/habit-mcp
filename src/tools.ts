@@ -16,11 +16,18 @@ import {
   upsertCheckIn,
 } from "./db/check-ins.js";
 import {
+  buildClearDayWeightStatement,
   buildSetDayCommentStatement,
+  buildSetDayExerciseStatement,
+  buildSetDayWeightStatement,
   deleteDayComment,
+  deleteDayExercise,
+  deleteDayWeight,
   getDay,
   listDays,
   setDayComment,
+  setDayExercise,
+  setDayWeight,
 } from "./db/days.js";
 import { isIsoDate } from "./util/date.js";
 import { ToolError } from "./util/errors.js";
@@ -39,10 +46,12 @@ import {
   parseVectorId,
   purgeCheckIn,
   purgeDayComment,
+  purgeDayExercise,
   purgeHabit,
   reindexStep,
   syncCheckInNote,
   syncDayComment,
+  syncDayExercise,
   syncHabit,
   type SyncCtx,
 } from "./vector/sync.js";
@@ -320,7 +329,8 @@ export function buildMcpServer(ctx: McpContext): McpServer {
     "delete_day_comment",
     {
       title: "Delete day comment",
-      description: "Remove the free-text comment for a date.",
+      description:
+        "Clear the free-text comment for a date. The day row itself is preserved (its weight, exercise, and check-ins remain).",
       inputSchema: { date: DateStr },
       annotations: { destructiveHint: true },
     },
@@ -336,14 +346,96 @@ export function buildMcpServer(ctx: McpContext): McpServer {
   );
 
   server.registerTool(
+    "set_day_weight",
+    {
+      title: "Set day weight",
+      description:
+        "Set (create or update) the body-weight reading for a date. Weight is a float with no unit enforced.",
+      inputSchema: { date: DateStr, weight: z.number() },
+    },
+    async ({ date, weight }) => {
+      try {
+        const day = await setDayWeight(db, date, weight);
+        return ok({ day });
+      } catch (e) {
+        return fail(e);
+      }
+    },
+  );
+
+  server.registerTool(
+    "delete_day_weight",
+    {
+      title: "Delete day weight",
+      description:
+        "Clear the weight reading for a date (sets it to null). The day row itself is preserved.",
+      inputSchema: { date: DateStr },
+      annotations: { destructiveHint: true },
+    },
+    async ({ date }) => {
+      try {
+        await deleteDayWeight(db, date);
+        return ok({ deleted: date });
+      } catch (e) {
+        return fail(e);
+      }
+    },
+  );
+
+  server.registerTool(
+    "set_day_exercise",
+    {
+      title: "Set day exercise",
+      description:
+        "Set (create or update) the free-text exercise log for a date. Embedded for semantic search under the `day_exercise` kind.",
+      inputSchema: { date: DateStr, exercise: z.string() },
+    },
+    async ({ date, exercise }) => {
+      try {
+        const day = await setDayExercise(db, date, exercise);
+        await bestEffort("syncDayExercise", () =>
+          syncDayExercise(sctx, date, exercise),
+        );
+        return ok({ day });
+      } catch (e) {
+        return fail(e);
+      }
+    },
+  );
+
+  server.registerTool(
+    "delete_day_exercise",
+    {
+      title: "Delete day exercise",
+      description:
+        "Clear the exercise log for a date. The day row itself is preserved.",
+      inputSchema: { date: DateStr },
+      annotations: { destructiveHint: true },
+    },
+    async ({ date }) => {
+      try {
+        await deleteDayExercise(db, date);
+        await bestEffort("purgeDayExercise", () =>
+          purgeDayExercise(sctx, date),
+        );
+        return ok({ deleted: date });
+      } catch (e) {
+        return fail(e);
+      }
+    },
+  );
+
+  server.registerTool(
     "record_day",
     {
       title: "Record a whole day",
       description:
-        "Convenience tool: set the day comment (optional) and upsert any number of check-ins in a single call.",
+        "Convenience tool: set any combination of the day's comment, weight, exercise, and check-ins in a single call. Pass `weight: null` to clear a previously set reading; omit fields to leave them unchanged.",
       inputSchema: {
         date: DateStr,
         comment: z.string().optional(),
+        weight: z.number().nullish(),
+        exercise: z.string().optional(),
         check_ins: z
           .array(
             z.object({
@@ -355,11 +447,21 @@ export function buildMcpServer(ctx: McpContext): McpServer {
           .optional(),
       },
     },
-    async ({ date, comment, check_ins }) => {
+    async ({ date, comment, weight, exercise, check_ins }) => {
       try {
         const statements: D1PreparedStatement[] = [];
         if (comment !== undefined) {
           statements.push(buildSetDayCommentStatement(db, date, comment));
+        }
+        if (weight !== undefined) {
+          statements.push(
+            weight === null
+              ? buildClearDayWeightStatement(db, date)
+              : buildSetDayWeightStatement(db, date, weight),
+          );
+        }
+        if (exercise !== undefined) {
+          statements.push(buildSetDayExerciseStatement(db, date, exercise));
         }
         for (const ci of check_ins ?? []) {
           statements.push(
@@ -377,6 +479,11 @@ export function buildMcpServer(ctx: McpContext): McpServer {
         if (comment !== undefined) {
           await bestEffort("syncDayComment.record", () =>
             syncDayComment(sctx, date, comment),
+          );
+        }
+        if (exercise !== undefined) {
+          await bestEffort("syncDayExercise.record", () =>
+            syncDayExercise(sctx, date, exercise),
           );
         }
         for (const ci of check_ins ?? []) {
@@ -474,6 +581,20 @@ export function buildMcpServer(ctx: McpContext): McpServer {
               const day = await getDay(db, parsed.date);
               if (!day.comment) return null;
               const snippet = pickChunk(day.comment, parsed.chunkIndex);
+              if (!snippet) return null;
+              return {
+                ...base,
+                date: parsed.date,
+                chunk_index: parsed.chunkIndex,
+                snippet,
+                day,
+              };
+            }
+            if (parsed.kind === "day_exercise") {
+              if (!parsed.date) return null;
+              const day = await getDay(db, parsed.date);
+              if (!day.exercise) return null;
+              const snippet = pickChunk(day.exercise, parsed.chunkIndex);
               if (!snippet) return null;
               return {
                 ...base,

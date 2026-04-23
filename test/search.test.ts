@@ -264,6 +264,72 @@ describe("search_text", () => {
     expect(await chunkCount("day:2026-05-01:comment")).toBe(0);
   });
 
+  it("indexes day exercise and hydrates search results with day_exercise kind", async () => {
+    await call(client, "set_day_exercise", {
+      date: "2026-05-10",
+      exercise: "long bike ride through hills",
+    });
+
+    expect(store.vectors.has("day:2026-05-10:exercise:0")).toBe(true);
+    expect(await chunkCount("day:2026-05-10:exercise")).toBe(1);
+
+    const search = await call<{
+      results: (SearchResult & { day?: { exercise: string } })[];
+    }>(client, "search_text", {
+      query: "bike ride hills",
+      kinds: ["day_exercise"],
+      limit: 5,
+    });
+    expect(search.isError).toBe(false);
+    expect(search.data.results.length).toBeGreaterThan(0);
+    const hit = search.data.results[0]!;
+    expect(hit.kind).toBe("day_exercise");
+    expect(hit.date).toBe("2026-05-10");
+    expect(hit.day?.exercise).toBe("long bike ride through hills");
+  });
+
+  it("updates exercise vector on re-set and purges it on delete_day_exercise", async () => {
+    const sourceId = "day:2026-05-11:exercise";
+    await call(client, "set_day_exercise", {
+      date: "2026-05-11",
+      exercise: "30 min run",
+    });
+    const before = store.vectors.get(`${sourceId}:0`)!.values.slice();
+
+    await call(client, "set_day_exercise", {
+      date: "2026-05-11",
+      exercise: "swimming laps at the pool",
+    });
+    const after = store.vectors.get(`${sourceId}:0`)!.values;
+    expect(after).not.toEqual(before);
+
+    await call(client, "delete_day_exercise", { date: "2026-05-11" });
+    expect(store.vectors.has(`${sourceId}:0`)).toBe(false);
+    expect(await chunkCount(sourceId)).toBe(0);
+  });
+
+  it("record_day syncs exercise alongside comment and check-in notes", async () => {
+    const h = await call<{ habit: { id: number } }>(client, "create_habit", {
+      name: "Move",
+      start_date: "2026-01-01",
+    });
+    const habitId = h.data.habit.id;
+
+    await call(client, "record_day", {
+      date: "2026-05-12",
+      comment: "recap",
+      exercise: "tennis 1h",
+      weight: 78.2,
+      check_ins: [{ habit_id: habitId, done: true, note: "played two sets" }],
+    });
+
+    expect(store.vectors.has("day:2026-05-12:comment:0")).toBe(true);
+    expect(store.vectors.has("day:2026-05-12:exercise:0")).toBe(true);
+    expect(store.vectors.has(`checkin:${habitId}:2026-05-12:note:0`)).toBe(
+      true,
+    );
+  });
+
   it("record_day syncs comment and check-in notes", async () => {
     const h = await call<{ habit: { id: number } }>(client, "create_habit", {
       name: "Stretch",
@@ -519,6 +585,7 @@ interface ReindexTotals {
   habit_names: number;
   habit_descriptions: number;
   day_comments: number;
+  day_exercises: number;
   check_in_notes: number;
   chunks_upserted: number;
   orphans_removed: number;
@@ -608,6 +675,7 @@ describe("reindex_embeddings", () => {
         habit_names: 2,
         habit_descriptions: 1,
         day_comments: 1,
+        day_exercises: 0,
         check_in_notes: 1,
         chunks_upserted: 5,
         orphans_removed: 0,
@@ -842,6 +910,7 @@ describe("reindex_embeddings", () => {
         habit_names: 0,
         habit_descriptions: 0,
         day_comments: 0,
+        day_exercises: 0,
         check_in_notes: 0,
         chunks_upserted: 0,
         orphans_removed: 0,
@@ -893,6 +962,7 @@ describe("reindex_embeddings", () => {
             habit_names: 0,
             habit_descriptions: 0,
             day_comments: 0,
+            day_exercises: 0,
             check_in_notes: 0,
             chunks_upserted: 0,
             orphans_removed: 0,

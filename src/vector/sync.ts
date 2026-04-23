@@ -7,7 +7,10 @@ import {
   setChunkCount,
 } from "../db/text-chunks.js";
 import { listHabits } from "../db/habits.js";
-import { listAllDaysWithComments } from "../db/days.js";
+import {
+  listAllDaysWithComments,
+  listAllDaysWithExercise,
+} from "../db/days.js";
 import { listAllCheckInsWithNotes } from "../db/check-ins.js";
 import { chunkText } from "./chunker.js";
 import type {
@@ -28,6 +31,10 @@ export function sourceIdForHabitDescription(id: number): string {
 
 export function sourceIdForDayComment(date: string): string {
   return `day:${date}:comment`;
+}
+
+export function sourceIdForDayExercise(date: string): string {
+  return `day:${date}:exercise`;
 }
 
 export function sourceIdForCheckInNote(habitId: number, date: string): string {
@@ -72,6 +79,15 @@ export function parseVectorId(id: string): ParsedVectorId | null {
       kind: "day_comment",
       date: dayComment[2],
       chunkIndex: Number(dayComment[3]),
+    };
+  }
+  const dayExercise = /^(day:(\d{4}-\d{2}-\d{2}):exercise):(\d+)$/.exec(id);
+  if (dayExercise?.[1] && dayExercise[2] && dayExercise[3] !== undefined) {
+    return {
+      sourceId: dayExercise[1],
+      kind: "day_exercise",
+      date: dayExercise[2],
+      chunkIndex: Number(dayExercise[3]),
     };
   }
   const checkIn = /^(checkin:(\d+):(\d{4}-\d{2}-\d{2}):note):(\d+)$/.exec(id);
@@ -204,6 +220,19 @@ export async function syncDayComment(
   );
 }
 
+export async function syncDayExercise(
+  ctx: SyncCtx,
+  date: string,
+  exercise: string | null | undefined,
+): Promise<void> {
+  await syncSource(
+    ctx,
+    sourceIdForDayExercise(date),
+    exercise,
+    () => ({ kind: "day_exercise", date }),
+  );
+}
+
 export async function syncCheckInNote(
   ctx: SyncCtx,
   habitId: number,
@@ -255,6 +284,13 @@ export async function purgeDayComment(
   await purgeSource(ctx, sourceIdForDayComment(date));
 }
 
+export async function purgeDayExercise(
+  ctx: SyncCtx,
+  date: string,
+): Promise<void> {
+  await purgeSource(ctx, sourceIdForDayExercise(date));
+}
+
 export async function reindexSource(
   ctx: SyncCtx,
   sourceId: string,
@@ -278,6 +314,7 @@ export interface ReindexTotals {
   habit_names: number;
   habit_descriptions: number;
   day_comments: number;
+  day_exercises: number;
   check_in_notes: number;
   chunks_upserted: number;
   orphans_removed: number;
@@ -301,6 +338,7 @@ function zeroTotals(): ReindexTotals {
     habit_names: 0,
     habit_descriptions: 0,
     day_comments: 0,
+    day_exercises: 0,
     check_in_notes: 0,
     chunks_upserted: 0,
     orphans_removed: 0,
@@ -316,6 +354,7 @@ function addTotals(a: ReindexTotals, b: ReindexTotals): ReindexTotals {
     habit_names: a.habit_names + b.habit_names,
     habit_descriptions: a.habit_descriptions + b.habit_descriptions,
     day_comments: a.day_comments + b.day_comments,
+    day_exercises: a.day_exercises + b.day_exercises,
     check_in_notes: a.check_in_notes + b.check_in_notes,
     chunks_upserted: a.chunks_upserted + b.chunks_upserted,
     orphans_removed: a.orphans_removed + b.orphans_removed,
@@ -374,6 +413,7 @@ export function decodeCursor(s: string): ReindexCursor {
     "habit_names",
     "habit_descriptions",
     "day_comments",
+    "day_exercises",
     "check_in_notes",
     "chunks_upserted",
     "orphans_removed",
@@ -389,9 +429,10 @@ export function decodeCursor(s: string): ReindexCursor {
 }
 
 async function computeTouchedSet(db: D1Database): Promise<Set<string>> {
-  const [habits, days, notes] = await Promise.all([
+  const [habits, dayComments, dayExercises, notes] = await Promise.all([
     listHabits(db),
     listAllDaysWithComments(db),
+    listAllDaysWithExercise(db),
     listAllCheckInsWithNotes(db),
   ]);
   const s = new Set<string>();
@@ -399,7 +440,8 @@ async function computeTouchedSet(db: D1Database): Promise<Set<string>> {
     s.add(sourceIdForHabitName(h.id));
     s.add(sourceIdForHabitDescription(h.id));
   }
-  for (const d of days) s.add(sourceIdForDayComment(d.date));
+  for (const d of dayComments) s.add(sourceIdForDayComment(d.date));
+  for (const d of dayExercises) s.add(sourceIdForDayExercise(d.date));
   for (const ci of notes) s.add(sourceIdForCheckInNote(ci.habitId, ci.date));
   return s;
 }
@@ -469,20 +511,51 @@ export async function reindexStep(
   }
 
   if (phase === "days") {
-    const days = await listAllDaysWithComments(ctx.db);
+    const [comments, exercises] = await Promise.all([
+      listAllDaysWithComments(ctx.db),
+      listAllDaysWithExercise(ctx.db),
+    ]);
+    const byDate = new Map<
+      string,
+      { date: string; comment?: string; exercise?: string }
+    >();
+    for (const c of comments) {
+      byDate.set(c.date, { date: c.date, comment: c.comment });
+    }
+    for (const e of exercises) {
+      const existing = byDate.get(e.date);
+      if (existing) existing.exercise = e.exercise;
+      else byDate.set(e.date, { date: e.date, exercise: e.exercise });
+    }
+    const days = [...byDate.values()].sort((a, b) =>
+      a.date.localeCompare(b.date),
+    );
     if (cursor.offset >= days.length) {
       return { next: advance(true, 0), processed, phase };
     }
     const slice = days.slice(cursor.offset, cursor.offset + limit);
     for (const d of slice) {
-      const id = sourceIdForDayComment(d.date);
-      const n = await reindexSource(ctx, id, d.comment, () => ({
-        kind: "day_comment",
-        date: d.date,
-      }));
-      if (n > 0) {
-        processed.day_comments++;
-        processed.chunks_upserted += n;
+      if (d.comment) {
+        const id = sourceIdForDayComment(d.date);
+        const n = await reindexSource(ctx, id, d.comment, () => ({
+          kind: "day_comment",
+          date: d.date,
+        }));
+        if (n > 0) {
+          processed.day_comments++;
+          processed.chunks_upserted += n;
+        }
+      }
+      if (d.exercise) {
+        const id = sourceIdForDayExercise(d.date);
+        const n = await reindexSource(ctx, id, d.exercise, () => ({
+          kind: "day_exercise",
+          date: d.date,
+        }));
+        if (n > 0) {
+          processed.day_exercises++;
+          processed.chunks_upserted += n;
+        }
       }
     }
     const newOffset = cursor.offset + slice.length;

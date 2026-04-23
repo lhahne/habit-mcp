@@ -36,19 +36,19 @@ This is a single-user **MCP server** running on **Cloudflare Workers + D1**, dep
 
 3. **MCP server (`src/tools.ts` + `src/db/*.ts` + `src/vector/*.ts`)** — `buildMcpServer({ db, store, embed })` registers all tools on an `McpServer` from `@modelcontextprotocol/sdk`. Tools are thin wrappers: validate inputs with Zod (`DateStr` enforces ISO `YYYY-MM-DD`), call a `src/db/*.ts` helper, return `ok(data)` or `fail(err)`. The DB helpers own all SQL and domain validation (e.g. `end_date >= start_date`, "not found: …" errors via `ToolError`). Row-to-domain conversion lives in `src/db/schema.ts` (`rowToHabit`, `rowToCheckIn`) — snake_case in SQL, camelCase in domain types; tools re-expose snake_case in their JSON schemas.
 
-### Data model (`migrations/0001_init.sql`)
+### Data model (`migrations/0001_init.sql`, `migrations/0003_day_weight_exercise.sql`)
 
 - `habits` — id, name, description, start_date, optional end_date.
-- `days` — one row per date with a free-text `comment` (primary key is the date).
+- `days` — one row per date with a free-text `comment`, a nullable `weight` (REAL), and a free-text `exercise` field (primary key is the date). `delete_day_comment` / `delete_day_weight` / `delete_day_exercise` each clear only their own column; the row survives as long as anything is set.
 - `check_ins` — composite PK `(habit_id, date)`, `done` as INTEGER 0/1, optional `note`. Cascades on habit delete.
 
-A "day" in the API is a synthetic join of the `days` row (may be absent ⇒ empty comment) plus all `check_ins` for that date. `listDays` returns only dates that have *either* a comment or at least one check-in.
+A "day" in the API is a synthetic join of the `days` row (may be absent ⇒ empty comment, null weight, empty exercise) plus all `check_ins` for that date. `listDays` returns only dates that have a `days` row (any field set) or at least one check-in.
 
 ### Vector search (`src/vector/*.ts`)
 
-All four free-form text fields (`habits.name`, `habits.description`, `days.comment`, `check_ins.note`) are embedded into a Cloudflare Vectorize index (binding `VECTORIZE`) using Workers AI (binding `AI`, model `@cf/baai/bge-m3`, 1024-dim, cosine). Long fields are split into overlapping chunks by `src/vector/chunker.ts` (≈1500 chars per chunk, 200-char overlap, breaks on paragraph/sentence boundaries) — there is no upper bound on field length.
+All five free-form text fields (`habits.name`, `habits.description`, `days.comment`, `days.exercise`, `check_ins.note`) are embedded into a Cloudflare Vectorize index (binding `VECTORIZE`) using Workers AI (binding `AI`, model `@cf/baai/bge-m3`, 1024-dim, cosine). Long fields are split into overlapping chunks by `src/vector/chunker.ts` (≈1500 chars per chunk, 200-char overlap, breaks on paragraph/sentence boundaries) — there is no upper bound on field length.
 
-Vector IDs combine a deterministic source ID with a chunk index: `habit:{id}:name:{i}`, `habit:{id}:description:{i}`, `day:{date}:comment:{i}`, `checkin:{habit_id}:{date}:note:{i}`. Metadata carries `{ kind, habit_id?, date?, chunk_index }` for filtering and for parsing IDs back into D1 lookups. The `text_chunks` D1 table (migration `0002_text_chunks.sql`) tracks `chunk_count` per source ID — this is the source of truth for which chunk vectors should exist, used to delete orphaned chunks when a field shrinks and to purge cleanly on delete.
+Vector IDs combine a deterministic source ID with a chunk index: `habit:{id}:name:{i}`, `habit:{id}:description:{i}`, `day:{date}:comment:{i}`, `day:{date}:exercise:{i}`, `checkin:{habit_id}:{date}:note:{i}`. Metadata carries `{ kind, habit_id?, date?, chunk_index }` for filtering and for parsing IDs back into D1 lookups. The `text_chunks` D1 table (migration `0002_text_chunks.sql`) tracks `chunk_count` per source ID — this is the source of truth for which chunk vectors should exist, used to delete orphaned chunks when a field shrinks and to purge cleanly on delete.
 
 Sync is **online, best-effort** and **self-healing under partial failure**. The order on every write is: (1) delete orphan chunk vectors `[newCount..priorCount-1]` if the field shrank; (2) upsert all current chunk vectors `[0..newCount-1]`; (3) update `text_chunks` to `newCount`. Any partial failure leaves state where the next sync can re-derive the correct shape, and `reindex_embeddings` recomputes everything from scratch (also cleaning up orphans left by past failures). Sync failures are logged but **never fail the write**.
 
