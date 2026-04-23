@@ -64,6 +64,8 @@ describe("mcp tools", () => {
         "create_habit",
         "delete_check_in",
         "delete_day_comment",
+        "delete_day_exercise",
+        "delete_day_weight",
         "delete_habit",
         "get_day",
         "get_habit",
@@ -73,6 +75,8 @@ describe("mcp tools", () => {
         "reindex_embeddings",
         "search_text",
         "set_day_comment",
+        "set_day_exercise",
+        "set_day_weight",
         "update_habit",
         "upsert_check_in",
       ].sort(),
@@ -238,12 +242,20 @@ describe("mcp tools", () => {
 
   it("get_day returns empty shape for an unknown date", async () => {
     const day = await call<{
-      day: { date: string; comment: string; checkIns: unknown[] };
+      day: {
+        date: string;
+        comment: string;
+        weight: number | null;
+        exercise: string;
+        checkIns: unknown[];
+      };
     }>(client, "get_day", { date: "2030-01-01" });
     expect(day.isError).toBe(false);
     expect(day.data.day).toEqual({
       date: "2030-01-01",
       comment: "",
+      weight: null,
+      exercise: "",
       checkIns: [],
     });
   });
@@ -272,7 +284,7 @@ describe("mcp tools", () => {
     expect(fetched.data.day.comment).toBe("finished");
   });
 
-  it("delete_day_comment removes the comment and errors when missing", async () => {
+  it("delete_day_comment clears the comment but preserves the row", async () => {
     await call(client, "set_day_comment", {
       date: "2026-03-11",
       comment: "scratch",
@@ -293,9 +305,116 @@ describe("mcp tools", () => {
     );
     expect(fetched.data.day.comment).toBe("");
 
+    // Second clear on an existing row is idempotent.
     const again = await call(client, "delete_day_comment", {
       date: "2026-03-11",
     });
-    expect(again.isError).toBe(true);
+    expect(again.isError).toBe(false);
+
+    // But clearing for a date that never had a row errors.
+    const missing = await call(client, "delete_day_comment", {
+      date: "2026-03-12",
+    });
+    expect(missing.isError).toBe(true);
+  });
+
+  it("set_day_weight / delete_day_weight round-trip", async () => {
+    const set = await call<{ day: { weight: number | null } }>(
+      client,
+      "set_day_weight",
+      { date: "2026-03-20", weight: 81.4 },
+    );
+    expect(set.isError).toBe(false);
+    expect(set.data.day.weight).toBe(81.4);
+
+    const updated = await call<{ day: { weight: number | null } }>(
+      client,
+      "set_day_weight",
+      { date: "2026-03-20", weight: 81.2 },
+    );
+    expect(updated.data.day.weight).toBe(81.2);
+
+    const cleared = await call<{ deleted: string }>(
+      client,
+      "delete_day_weight",
+      { date: "2026-03-20" },
+    );
+    expect(cleared.isError).toBe(false);
+
+    const fetched = await call<{ day: { weight: number | null } }>(
+      client,
+      "get_day",
+      { date: "2026-03-20" },
+    );
+    expect(fetched.data.day.weight).toBeNull();
+
+    const missing = await call(client, "delete_day_weight", {
+      date: "2026-03-21",
+    });
+    expect(missing.isError).toBe(true);
+  });
+
+  it("set_day_exercise / delete_day_exercise round-trip", async () => {
+    const set = await call<{ day: { exercise: string } }>(
+      client,
+      "set_day_exercise",
+      { date: "2026-03-22", exercise: "30 min easy run" },
+    );
+    expect(set.isError).toBe(false);
+    expect(set.data.day.exercise).toBe("30 min easy run");
+
+    const cleared = await call<{ deleted: string }>(
+      client,
+      "delete_day_exercise",
+      { date: "2026-03-22" },
+    );
+    expect(cleared.isError).toBe(false);
+
+    const fetched = await call<{ day: { exercise: string } }>(
+      client,
+      "get_day",
+      { date: "2026-03-22" },
+    );
+    expect(fetched.data.day.exercise).toBe("");
+
+    const missing = await call(client, "delete_day_exercise", {
+      date: "2026-03-23",
+    });
+    expect(missing.isError).toBe(true);
+  });
+
+  it("record_day writes comment, weight, exercise, and check-ins atomically", async () => {
+    const id = await makeHabitTool("Stretch");
+    const res = await call<{
+      day: {
+        comment: string;
+        weight: number | null;
+        exercise: string;
+        checkIns: { habitId: number; note: string | null }[];
+      };
+    }>(client, "record_day", {
+      date: "2026-04-01",
+      comment: "solid day",
+      weight: 79.9,
+      exercise: "yoga 20 min",
+      check_ins: [{ habit_id: id, note: "morning" }],
+    });
+    expect(res.isError).toBe(false);
+    expect(res.data.day).toMatchObject({
+      comment: "solid day",
+      weight: 79.9,
+      exercise: "yoga 20 min",
+    });
+    expect(res.data.day.checkIns).toHaveLength(1);
+    expect(res.data.day.checkIns[0]!.note).toBe("morning");
+
+    // weight: null in record_day clears the weight.
+    await call(client, "record_day", { date: "2026-04-01", weight: null });
+    const fetched = await call<{ day: { weight: number | null } }>(
+      client,
+      "get_day",
+      { date: "2026-04-01" },
+    );
+    expect(fetched.data.day.weight).toBeNull();
   });
 });

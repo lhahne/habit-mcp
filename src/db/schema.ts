@@ -20,6 +20,8 @@ export interface CheckInRow {
 export interface DayRow {
   date: string;
   comment: string;
+  weight: number | null;
+  exercise: string;
   created_at: string;
   updated_at: string;
 }
@@ -46,6 +48,8 @@ export interface CheckIn {
 export interface Day {
   date: string;
   comment: string;
+  weight: number | null;
+  exercise: string;
   checkIns: CheckIn[];
 }
 
