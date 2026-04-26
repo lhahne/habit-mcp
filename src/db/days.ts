@@ -9,7 +9,14 @@ export interface ListDaysOptions {
 }
 
 function emptyDay(date: string): Day {
-  return { date, comment: "", weight: null, exercise: "", checkIns: [] };
+  return {
+    date,
+    comment: "",
+    weight: null,
+    exercise: "",
+    weeklyComment: "",
+    checkIns: [],
+  };
 }
 
 function dayFromRow(row: DayRow, checkIns: Day["checkIns"]): Day {
@@ -18,6 +25,7 @@ function dayFromRow(row: DayRow, checkIns: Day["checkIns"]): Day {
     comment: row.comment,
     weight: row.weight,
     exercise: row.exercise,
+    weeklyComment: row.weekly_comment,
     checkIns,
   };
 }
@@ -67,6 +75,19 @@ export async function listAllDaysWithExercise(
   return res.results ?? [];
 }
 
+export async function listAllDaysWithWeeklyComment(
+  db: D1Database,
+): Promise<{ date: string; weekly_comment: string }[]> {
+  const res = await db
+    .prepare(
+      `SELECT date, weekly_comment FROM days
+       WHERE TRIM(weekly_comment) <> ''
+       ORDER BY date ASC`,
+    )
+    .all<{ date: string; weekly_comment: string }>();
+  return res.results ?? [];
+}
+
 export async function listDays(
   db: D1Database,
   opts: ListDaysOptions,
@@ -84,7 +105,7 @@ export async function listDays(
       .prepare(
         `SELECT * FROM days
          WHERE date >= ?1 AND date <= ?2
-           AND (TRIM(comment) <> '' OR weight IS NOT NULL OR TRIM(exercise) <> '')`,
+           AND (TRIM(comment) <> '' OR weight IS NOT NULL OR TRIM(exercise) <> '' OR TRIM(weekly_comment) <> '')`,
       )
       .bind(opts.from, opts.to)
       .all<DayRow>(),
@@ -247,6 +268,49 @@ export async function deleteDayExercise(
   const res = await db
     .prepare(
       `UPDATE days SET exercise = '', updated_at = ?2
+       WHERE date = ?1
+       RETURNING date`,
+    )
+    .bind(date, nowIso())
+    .first<{ date: string }>();
+  if (!res) throw new ToolError(`not found: day ${date}`);
+}
+
+export function buildSetDayWeeklyCommentStatement(
+  db: D1Database,
+  date: string,
+  weeklyComment: string,
+): D1PreparedStatement {
+  assertIsoDate(date, "date");
+  const now = nowIso();
+  return db
+    .prepare(
+      `INSERT INTO days (date, weekly_comment, created_at, updated_at)
+       VALUES (?1, ?2, ?3, ?3)
+       ON CONFLICT (date) DO UPDATE SET
+         weekly_comment = excluded.weekly_comment,
+         updated_at = excluded.updated_at`,
+    )
+    .bind(date, weeklyComment, now);
+}
+
+export async function setDayWeeklyComment(
+  db: D1Database,
+  date: string,
+  weeklyComment: string,
+): Promise<Day> {
+  await buildSetDayWeeklyCommentStatement(db, date, weeklyComment).run();
+  return getDay(db, date);
+}
+
+export async function deleteDayWeeklyComment(
+  db: D1Database,
+  date: string,
+): Promise<void> {
+  assertIsoDate(date, "date");
+  const res = await db
+    .prepare(
+      `UPDATE days SET weekly_comment = '', updated_at = ?2
        WHERE date = ?1
        RETURNING date`,
     )

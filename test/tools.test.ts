@@ -65,6 +65,7 @@ describe("mcp tools", () => {
         "delete_check_in",
         "delete_day_comment",
         "delete_day_exercise",
+        "delete_day_weekly_comment",
         "delete_day_weight",
         "delete_habit",
         "get_day",
@@ -76,6 +77,7 @@ describe("mcp tools", () => {
         "search_text",
         "set_day_comment",
         "set_day_exercise",
+        "set_day_weekly_comment",
         "set_day_weight",
         "update_habit",
         "upsert_check_in",
@@ -247,6 +249,7 @@ describe("mcp tools", () => {
         comment: string;
         weight: number | null;
         exercise: string;
+        weeklyComment: string;
         checkIns: unknown[];
       };
     }>(client, "get_day", { date: "2030-01-01" });
@@ -256,6 +259,7 @@ describe("mcp tools", () => {
       comment: "",
       weight: null,
       exercise: "",
+      weeklyComment: "",
       checkIns: [],
     });
   });
@@ -383,13 +387,43 @@ describe("mcp tools", () => {
     expect(missing.isError).toBe(true);
   });
 
-  it("record_day writes comment, weight, exercise, and check-ins atomically", async () => {
+  it("set_day_weekly_comment / delete_day_weekly_comment round-trip", async () => {
+    const set = await call<{ day: { weeklyComment: string } }>(
+      client,
+      "set_day_weekly_comment",
+      { date: "2026-03-24", weekly_comment: "deload week" },
+    );
+    expect(set.isError).toBe(false);
+    expect(set.data.day.weeklyComment).toBe("deload week");
+
+    const cleared = await call<{ deleted: string }>(
+      client,
+      "delete_day_weekly_comment",
+      { date: "2026-03-24" },
+    );
+    expect(cleared.isError).toBe(false);
+
+    const fetched = await call<{ day: { weeklyComment: string } }>(
+      client,
+      "get_day",
+      { date: "2026-03-24" },
+    );
+    expect(fetched.data.day.weeklyComment).toBe("");
+
+    const missing = await call(client, "delete_day_weekly_comment", {
+      date: "2026-03-25",
+    });
+    expect(missing.isError).toBe(true);
+  });
+
+  it("record_day writes comment, weight, exercise, weekly_comment, and check-ins atomically", async () => {
     const id = await makeHabitTool("Stretch");
     const res = await call<{
       day: {
         comment: string;
         weight: number | null;
         exercise: string;
+        weeklyComment: string;
         checkIns: { habitId: number; note: string | null }[];
       };
     }>(client, "record_day", {
@@ -397,6 +431,7 @@ describe("mcp tools", () => {
       comment: "solid day",
       weight: 79.9,
       exercise: "yoga 20 min",
+      weekly_comment: "build phase wrap-up",
       check_ins: [{ habit_id: id, note: "morning" }],
     });
     expect(res.isError).toBe(false);
@@ -404,6 +439,7 @@ describe("mcp tools", () => {
       comment: "solid day",
       weight: 79.9,
       exercise: "yoga 20 min",
+      weeklyComment: "build phase wrap-up",
     });
     expect(res.data.day.checkIns).toHaveLength(1);
     expect(res.data.day.checkIns[0]!.note).toBe("morning");

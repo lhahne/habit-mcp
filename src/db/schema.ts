@@ -22,6 +22,7 @@ export interface DayRow {
   comment: string;
   weight: number | null;
   exercise: string;
+  weekly_comment: string;
   created_at: string;
   updated_at: string;
 }
@@ -50,6 +51,7 @@ export interface Day {
   comment: string;
   weight: number | null;
   exercise: string;
+  weeklyComment: string;
   checkIns: CheckIn[];
 }
 

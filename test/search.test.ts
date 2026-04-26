@@ -288,6 +288,50 @@ describe("search_text", () => {
     expect(hit.day?.exercise).toBe("long bike ride through hills");
   });
 
+  it("indexes day weekly comment and hydrates search results with day_weekly_comment kind", async () => {
+    await call(client, "set_day_weekly_comment", {
+      date: "2026-05-12",
+      weekly_comment: "focus on recovery and meal prep",
+    });
+
+    expect(store.vectors.has("day:2026-05-12:weekly_comment:0")).toBe(true);
+    expect(await chunkCount("day:2026-05-12:weekly_comment")).toBe(1);
+
+    const search = await call<{
+      results: (SearchResult & { day?: { weeklyComment: string } })[];
+    }>(client, "search_text", {
+      query: "meal prep recovery",
+      kinds: ["day_weekly_comment"],
+      limit: 5,
+    });
+    expect(search.isError).toBe(false);
+    expect(search.data.results.length).toBeGreaterThan(0);
+    const hit = search.data.results[0]!;
+    expect(hit.kind).toBe("day_weekly_comment");
+    expect(hit.date).toBe("2026-05-12");
+    expect(hit.day?.weeklyComment).toBe("focus on recovery and meal prep");
+  });
+
+  it("updates weekly_comment vector on re-set and purges it on delete_day_weekly_comment", async () => {
+    const sourceId = "day:2026-05-13:weekly_comment";
+    await call(client, "set_day_weekly_comment", {
+      date: "2026-05-13",
+      weekly_comment: "first draft of weekly goals",
+    });
+    const before = store.vectors.get(`${sourceId}:0`)!.values.slice();
+
+    await call(client, "set_day_weekly_comment", {
+      date: "2026-05-13",
+      weekly_comment: "completely different revised goals",
+    });
+    const after = store.vectors.get(`${sourceId}:0`)!.values;
+    expect(after).not.toEqual(before);
+
+    await call(client, "delete_day_weekly_comment", { date: "2026-05-13" });
+    expect(store.vectors.has(`${sourceId}:0`)).toBe(false);
+    expect(await chunkCount(sourceId)).toBe(0);
+  });
+
   it("updates exercise vector on re-set and purges it on delete_day_exercise", async () => {
     const sourceId = "day:2026-05-11:exercise";
     await call(client, "set_day_exercise", {
@@ -308,7 +352,7 @@ describe("search_text", () => {
     expect(await chunkCount(sourceId)).toBe(0);
   });
 
-  it("record_day syncs exercise alongside comment and check-in notes", async () => {
+  it("record_day syncs exercise and weekly_comment alongside comment and check-in notes", async () => {
     const h = await call<{ habit: { id: number } }>(client, "create_habit", {
       name: "Move",
       start_date: "2026-01-01",
@@ -316,16 +360,18 @@ describe("search_text", () => {
     const habitId = h.data.habit.id;
 
     await call(client, "record_day", {
-      date: "2026-05-12",
+      date: "2026-05-14",
       comment: "recap",
       exercise: "tennis 1h",
+      weekly_comment: "training week wrap-up",
       weight: 78.2,
       check_ins: [{ habit_id: habitId, done: true, note: "played two sets" }],
     });
 
-    expect(store.vectors.has("day:2026-05-12:comment:0")).toBe(true);
-    expect(store.vectors.has("day:2026-05-12:exercise:0")).toBe(true);
-    expect(store.vectors.has(`checkin:${habitId}:2026-05-12:note:0`)).toBe(
+    expect(store.vectors.has("day:2026-05-14:comment:0")).toBe(true);
+    expect(store.vectors.has("day:2026-05-14:exercise:0")).toBe(true);
+    expect(store.vectors.has("day:2026-05-14:weekly_comment:0")).toBe(true);
+    expect(store.vectors.has(`checkin:${habitId}:2026-05-14:note:0`)).toBe(
       true,
     );
   });
@@ -614,6 +660,7 @@ interface ReindexTotals {
   habit_descriptions: number;
   day_comments: number;
   day_exercises: number;
+  day_weekly_comments: number;
   check_in_notes: number;
   chunks_upserted: number;
   orphans_removed: number;
@@ -704,6 +751,7 @@ describe("reindex_embeddings", () => {
         habit_descriptions: 1,
         day_comments: 1,
         day_exercises: 0,
+        day_weekly_comments: 0,
         check_in_notes: 1,
         chunks_upserted: 5,
         orphans_removed: 0,
@@ -714,31 +762,37 @@ describe("reindex_embeddings", () => {
     }
   });
 
-  it("reindex days phase processes both comment and exercise on the same date", async () => {
+  it("reindex days phase processes comment, exercise, and weekly_comment on the same date", async () => {
     const store = inMemoryStore();
     const embed = fakeEmbeddings();
 
-    // Three dates exercising the merge-by-date code path in reindexStep:
-    // (a) comment only, (b) exercise only, (c) both fields set on one row.
+    // Dates exercising the merge-by-date code path in reindexStep across
+    // every text field on `days`.
     await db()
       .prepare(
-        `INSERT INTO days (date, comment, exercise) VALUES (?1, ?2, ?3)`,
+        `INSERT INTO days (date, comment, exercise, weekly_comment) VALUES (?1, ?2, ?3, ?4)`,
       )
-      .bind("2026-10-01", "comment only", "")
+      .bind("2026-10-01", "comment only", "", "")
       .run();
     await db()
       .prepare(
-        `INSERT INTO days (date, comment, exercise) VALUES (?1, ?2, ?3)`,
+        `INSERT INTO days (date, comment, exercise, weekly_comment) VALUES (?1, ?2, ?3, ?4)`,
       )
-      .bind("2026-10-02", "", "exercise only")
+      .bind("2026-10-02", "", "exercise only", "")
       .run();
     await db()
       .prepare(
-        `INSERT INTO days (date, comment, exercise) VALUES (?1, ?2, ?3)`,
+        `INSERT INTO days (date, comment, exercise, weekly_comment) VALUES (?1, ?2, ?3, ?4)`,
       )
-      .bind("2026-10-03", "both set", "and so is exercise")
+      .bind("2026-10-03", "both set", "and so is exercise", "weekly recap")
       .run();
-    // A row with only weight must NOT count as either comment or exercise work.
+    await db()
+      .prepare(
+        `INSERT INTO days (date, comment, exercise, weekly_comment) VALUES (?1, ?2, ?3, ?4)`,
+      )
+      .bind("2026-10-05", "", "", "weekly only")
+      .run();
+    // A row with only weight must NOT count as any text work.
     await db()
       .prepare(
         `INSERT INTO days (date, weight) VALUES (?1, ?2)`,
@@ -751,15 +805,22 @@ describe("reindex_embeddings", () => {
       const { totals } = await runReindex(client);
       expect(totals.day_comments).toBe(2);
       expect(totals.day_exercises).toBe(2);
-      // 4 chunks from 4 short fields, no other sources seeded.
-      expect(totals.chunks_upserted).toBe(4);
+      expect(totals.day_weekly_comments).toBe(2);
+      // 6 chunks from 6 short fields, no other sources seeded.
+      expect(totals.chunks_upserted).toBe(6);
 
-      // Both vectors for the "both set" date must be present.
+      // All three vectors for the "both set" date must be present.
       expect(store.vectors.has("day:2026-10-03:comment:0")).toBe(true);
       expect(store.vectors.has("day:2026-10-03:exercise:0")).toBe(true);
+      expect(store.vectors.has("day:2026-10-03:weekly_comment:0")).toBe(true);
+      // The weekly-only row produced exactly its weekly_comment vector.
+      expect(store.vectors.has("day:2026-10-05:weekly_comment:0")).toBe(true);
+      expect(store.vectors.has("day:2026-10-05:comment:0")).toBe(false);
+      expect(store.vectors.has("day:2026-10-05:exercise:0")).toBe(false);
       // The weight-only row produced no vectors.
       expect(store.vectors.has("day:2026-10-04:comment:0")).toBe(false);
       expect(store.vectors.has("day:2026-10-04:exercise:0")).toBe(false);
+      expect(store.vectors.has("day:2026-10-04:weekly_comment:0")).toBe(false);
     } finally {
       await close();
     }
@@ -995,6 +1056,7 @@ describe("reindex_embeddings", () => {
         habit_descriptions: 0,
         day_comments: 0,
         day_exercises: 0,
+        day_weekly_comments: 0,
         check_in_notes: 0,
         chunks_upserted: 0,
         orphans_removed: 0,
@@ -1047,6 +1109,7 @@ describe("reindex_embeddings", () => {
             habit_descriptions: 0,
             day_comments: 0,
             day_exercises: 0,
+            day_weekly_comments: 0,
             check_in_notes: 0,
             chunks_upserted: 0,
             orphans_removed: 0,

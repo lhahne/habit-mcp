@@ -7,8 +7,10 @@ import {
 } from "../src/db/check-ins.js";
 import {
   deleteDayComment,
+  deleteDayWeeklyComment,
   setDayComment,
   setDayExercise,
+  setDayWeeklyComment,
 } from "../src/db/days.js";
 import { deleteHabit, updateHabit } from "../src/db/habits.js";
 import { buildMcpServer } from "../src/tools.js";
@@ -33,6 +35,7 @@ interface DaysHistoryRow {
   comment: string;
   weight: number | null;
   exercise: string;
+  weekly_comment: string;
   created_at: string;
   updated_at: string;
   archived_at: string;
@@ -147,6 +150,29 @@ describe("row version history", () => {
     expect(history[0]).toMatchObject({
       date: "2026-04-23",
       comment: "morning run",
+      operation: "UPDATE",
+    });
+  });
+
+  it("archives the prior weekly_comment on overwrite and on clear", async () => {
+    await setDayWeeklyComment(db(), "2026-04-30", "v1 weekly");
+    expect(await daysHistory()).toEqual([]);
+
+    await setDayWeeklyComment(db(), "2026-04-30", "v2 weekly");
+    let history = await daysHistory();
+    expect(history).toHaveLength(1);
+    expect(history[0]).toMatchObject({
+      date: "2026-04-30",
+      weekly_comment: "v1 weekly",
+      operation: "UPDATE",
+    });
+
+    await deleteDayWeeklyComment(db(), "2026-04-30");
+    history = await daysHistory();
+    expect(history).toHaveLength(2);
+    expect(history[1]).toMatchObject({
+      date: "2026-04-30",
+      weekly_comment: "v2 weekly",
       operation: "UPDATE",
     });
   });

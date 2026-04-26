@@ -19,14 +19,17 @@ import {
   buildClearDayWeightStatement,
   buildSetDayCommentStatement,
   buildSetDayExerciseStatement,
+  buildSetDayWeeklyCommentStatement,
   buildSetDayWeightStatement,
   deleteDayComment,
   deleteDayExercise,
+  deleteDayWeeklyComment,
   deleteDayWeight,
   getDay,
   listDays,
   setDayComment,
   setDayExercise,
+  setDayWeeklyComment,
   setDayWeight,
 } from "./db/days.js";
 import { isIsoDate } from "./util/date.js";
@@ -47,11 +50,13 @@ import {
   purgeCheckIn,
   purgeDayComment,
   purgeDayExercise,
+  purgeDayWeeklyComment,
   purgeHabit,
   reindexStep,
   syncCheckInNote,
   syncDayComment,
   syncDayExercise,
+  syncDayWeeklyComment,
   syncHabit,
   type SyncCtx,
 } from "./vector/sync.js";
@@ -218,7 +223,7 @@ export function buildMcpServer(ctx: McpContext): McpServer {
     {
       title: "List days",
       description:
-        "List every date in [from, to] that has either a day comment or at least one check-in. Each entry contains the date's free-text comment and its check-ins.",
+        "List every date in [from, to] that has any day field set (comment, weight, exercise, or weekly_comment) or at least one check-in. Each entry contains the date's comment, weight, exercise, weekly_comment, and check-ins.",
       inputSchema: { from: DateStr, to: DateStr },
       annotations: { readOnlyHint: true, idempotentHint: true },
     },
@@ -292,7 +297,7 @@ export function buildMcpServer(ctx: McpContext): McpServer {
     {
       title: "Get day",
       description:
-        "Return the day's free-text comment together with all check-ins recorded for that day.",
+        "Return the day's comment, weight, exercise, and weekly_comment together with all check-ins recorded for that day. Missing fields come back as empty strings or null weight.",
       inputSchema: { date: DateStr },
       annotations: { readOnlyHint: true, idempotentHint: true },
     },
@@ -426,16 +431,60 @@ export function buildMcpServer(ctx: McpContext): McpServer {
   );
 
   server.registerTool(
+    "set_day_weekly_comment",
+    {
+      title: "Set day weekly comment",
+      description:
+        "Set (create or update) the free-text weekly comment for a date. Embedded for semantic search under the `day_weekly_comment` kind.",
+      inputSchema: { date: DateStr, weekly_comment: z.string() },
+    },
+    async ({ date, weekly_comment }) => {
+      try {
+        const day = await setDayWeeklyComment(db, date, weekly_comment);
+        await bestEffort("syncDayWeeklyComment", () =>
+          syncDayWeeklyComment(sctx, date, weekly_comment),
+        );
+        return ok({ day });
+      } catch (e) {
+        return fail(e);
+      }
+    },
+  );
+
+  server.registerTool(
+    "delete_day_weekly_comment",
+    {
+      title: "Delete day weekly comment",
+      description:
+        "Clear the weekly comment for a date. The day row itself is preserved.",
+      inputSchema: { date: DateStr },
+      annotations: { destructiveHint: true },
+    },
+    async ({ date }) => {
+      try {
+        await deleteDayWeeklyComment(db, date);
+        await bestEffort("purgeDayWeeklyComment", () =>
+          purgeDayWeeklyComment(sctx, date),
+        );
+        return ok({ deleted: date });
+      } catch (e) {
+        return fail(e);
+      }
+    },
+  );
+
+  server.registerTool(
     "record_day",
     {
       title: "Record a whole day",
       description:
-        "Convenience tool: set any combination of the day's comment, weight, exercise, and check-ins in a single call. Pass `weight: null` to clear a previously set reading; omit fields to leave them unchanged.",
+        "Convenience tool: set any combination of the day's comment, weight, exercise, weekly_comment, and check-ins in a single call. Pass `weight: null` to clear a previously set reading; omit fields to leave them unchanged.",
       inputSchema: {
         date: DateStr,
         comment: z.string().optional(),
         weight: z.number().nullish(),
         exercise: z.string().optional(),
+        weekly_comment: z.string().optional(),
         check_ins: z
           .array(
             z.object({
@@ -447,7 +496,7 @@ export function buildMcpServer(ctx: McpContext): McpServer {
           .optional(),
       },
     },
-    async ({ date, comment, weight, exercise, check_ins }) => {
+    async ({ date, comment, weight, exercise, weekly_comment, check_ins }) => {
       try {
         const statements: D1PreparedStatement[] = [];
         if (comment !== undefined) {
@@ -462,6 +511,11 @@ export function buildMcpServer(ctx: McpContext): McpServer {
         }
         if (exercise !== undefined) {
           statements.push(buildSetDayExerciseStatement(db, date, exercise));
+        }
+        if (weekly_comment !== undefined) {
+          statements.push(
+            buildSetDayWeeklyCommentStatement(db, date, weekly_comment),
+          );
         }
         for (const ci of check_ins ?? []) {
           statements.push(
@@ -486,6 +540,11 @@ export function buildMcpServer(ctx: McpContext): McpServer {
             syncDayExercise(sctx, date, exercise),
           );
         }
+        if (weekly_comment !== undefined) {
+          await bestEffort("syncDayWeeklyComment.record", () =>
+            syncDayWeeklyComment(sctx, date, weekly_comment),
+          );
+        }
         for (const ci of check_ins ?? []) {
           if (ci.note !== undefined) {
             const noteVal = ci.note;
@@ -506,7 +565,7 @@ export function buildMcpServer(ctx: McpContext): McpServer {
     {
       title: "Semantic text search",
       description:
-        "Semantic search across all free-form text fields (habit names, habit descriptions, day comments, check-in notes). Long fields are split into chunks; results are deduped to one entry per source field, returning the best-scoring chunk as the snippet. Optionally filter by `kinds`.",
+        "Semantic search across all free-form text fields (habit names, habit descriptions, day comments, day exercises, day weekly comments, check-in notes). Long fields are split into chunks; results are deduped to one entry per source field, returning the best-scoring chunk as the snippet. Optionally filter by `kinds`.",
       inputSchema: {
         query: z.string().min(1),
         limit: z.number().int().min(1).max(50).optional(),
@@ -604,6 +663,20 @@ export function buildMcpServer(ctx: McpContext): McpServer {
                 day,
               };
             }
+            if (parsed.kind === "day_weekly_comment") {
+              if (!parsed.date) return null;
+              const day = await getDay(db, parsed.date);
+              if (!day.weeklyComment) return null;
+              const snippet = pickChunk(day.weeklyComment, parsed.chunkIndex);
+              if (!snippet) return null;
+              return {
+                ...base,
+                date: parsed.date,
+                chunk_index: parsed.chunkIndex,
+                snippet,
+                day,
+              };
+            }
             if (parsed.kind === "check_in_note") {
               if (parsed.habitId === undefined || !parsed.date) return null;
               const ci = await getCheckIn(db, parsed.habitId, parsed.date);
@@ -638,7 +711,7 @@ export function buildMcpServer(ctx: McpContext): McpServer {
     {
       title: "Rebuild vector index (paginated)",
       description:
-        "Recompute embeddings for habit names, descriptions, day comments, and check-in notes in small batches to stay under the per-invocation subrequest limit. Omit `cursor` on the first call. If the response has `done: false`, call again with `{ cursor: <next_cursor> }` until `done: true`. Also deletes orphaned chunk vectors. Idempotent. Note: `limit: 0` is a no-op that echoes the cursor (useful for progress inspection only); any loop that drives a full reindex must use `limit >= 1` or it will never terminate.",
+        "Recompute embeddings for habit names, descriptions, day comments, day exercises, day weekly comments, and check-in notes in small batches to stay under the per-invocation subrequest limit. Omit `cursor` on the first call. If the response has `done: false`, call again with `{ cursor: <next_cursor> }` until `done: true`. Also deletes orphaned chunk vectors. Idempotent. Note: `limit: 0` is a no-op that echoes the cursor (useful for progress inspection only); any loop that drives a full reindex must use `limit >= 1` or it will never terminate.",
       inputSchema: {
         cursor: z.string().optional(),
         limit: z.number().int().min(0).max(25).optional(),

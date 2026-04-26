@@ -3,13 +3,16 @@ import { upsertCheckIn } from "../src/db/check-ins.js";
 import {
   deleteDayComment,
   deleteDayExercise,
+  deleteDayWeeklyComment,
   deleteDayWeight,
   getDay,
   listAllDaysWithComments,
   listAllDaysWithExercise,
+  listAllDaysWithWeeklyComment,
   listDays,
   setDayComment,
   setDayExercise,
+  setDayWeeklyComment,
   setDayWeight,
 } from "../src/db/days.js";
 import { db, makeHabit } from "./helpers.js";
@@ -22,6 +25,7 @@ describe("days", () => {
       comment: "",
       weight: null,
       exercise: "",
+      weeklyComment: "",
       checkIns: [],
     });
   });
@@ -96,13 +100,44 @@ describe("days", () => {
     );
   });
 
+  it("setDayWeeklyComment upserts and deleteDayWeeklyComment clears to empty string", async () => {
+    const d1 = await setDayWeeklyComment(
+      db(),
+      "2026-08-05",
+      "monday: aim for 3 gym sessions",
+    );
+    expect(d1.weeklyComment).toBe("monday: aim for 3 gym sessions");
+    expect(d1.comment).toBe("");
+    expect(d1.exercise).toBe("");
+    expect(d1.weight).toBeNull();
+
+    const d2 = await setDayWeeklyComment(db(), "2026-08-05", "updated goals");
+    expect(d2.weeklyComment).toBe("updated goals");
+
+    await deleteDayWeeklyComment(db(), "2026-08-05");
+    const d3 = await getDay(db(), "2026-08-05");
+    expect(d3.weeklyComment).toBe("");
+    await expect(
+      deleteDayWeeklyComment(db(), "2026-08-05"),
+    ).resolves.toBeUndefined();
+    await expect(deleteDayWeeklyComment(db(), "2026-08-06")).rejects.toThrow(
+      /not found/,
+    );
+  });
+
   it("rejects invalid dates on weight and exercise setters", async () => {
     await expect(setDayWeight(db(), "bogus", 70)).rejects.toThrow(/ISO date/);
     await expect(setDayExercise(db(), "bogus", "run")).rejects.toThrow(
       /ISO date/,
     );
+    await expect(setDayWeeklyComment(db(), "bogus", "x")).rejects.toThrow(
+      /ISO date/,
+    );
     await expect(deleteDayWeight(db(), "bogus")).rejects.toThrow(/ISO date/);
     await expect(deleteDayExercise(db(), "bogus")).rejects.toThrow(/ISO date/);
+    await expect(deleteDayWeeklyComment(db(), "bogus")).rejects.toThrow(
+      /ISO date/,
+    );
   });
 
   it("rejects invalid dates", async () => {
@@ -146,22 +181,31 @@ describe("days", () => {
     await setDayExercise(db(), "2026-09-03", "run");
     await deleteDayExercise(db(), "2026-09-03");
 
+    await setDayWeeklyComment(db(), "2026-09-05", "weekly draft");
+    await deleteDayWeeklyComment(db(), "2026-09-05");
+
     // A date with weight still set must remain visible.
     await setDayWeight(db(), "2026-09-04", 81);
+    // A date with only weekly_comment set must remain visible.
+    await setDayWeeklyComment(db(), "2026-09-06", "review the week");
 
     const days = await listDays(db(), { from: "2026-09-01", to: "2026-09-30" });
-    expect(days.map((d) => d.date)).toEqual(["2026-09-04"]);
+    expect(days.map((d) => d.date)).toEqual(["2026-09-04", "2026-09-06"]);
+    expect(days[1]!.weeklyComment).toBe("review the week");
   });
 
-  it("listAllDaysWithComments / listAllDaysWithExercise filter empty rows and sort by date", async () => {
+  it("listAllDaysWithComments / listAllDaysWithExercise / listAllDaysWithWeeklyComment filter empty rows and sort by date", async () => {
     await setDayComment(db(), "2026-10-02", "second");
     await setDayComment(db(), "2026-10-01", "first");
     await setDayExercise(db(), "2026-10-01", "run");
     await setDayExercise(db(), "2026-10-03", "swim");
-    // A row with only weight set must NOT appear in either listing.
+    await setDayWeeklyComment(db(), "2026-10-02", "week of focus");
+    await setDayWeeklyComment(db(), "2026-10-06", "deload week");
+    // A row with only weight set must NOT appear in any text listing.
     await setDayWeight(db(), "2026-10-04", 80);
     // A whitespace-only field is treated as empty (TRIM filter).
     await setDayComment(db(), "2026-10-05", "   ");
+    await setDayWeeklyComment(db(), "2026-10-07", "   ");
 
     const comments = await listAllDaysWithComments(db());
     expect(comments).toEqual([
@@ -173,6 +217,12 @@ describe("days", () => {
     expect(exercises).toEqual([
       { date: "2026-10-01", exercise: "run" },
       { date: "2026-10-03", exercise: "swim" },
+    ]);
+
+    const weeklyComments = await listAllDaysWithWeeklyComment(db());
+    expect(weeklyComments).toEqual([
+      { date: "2026-10-02", weekly_comment: "week of focus" },
+      { date: "2026-10-06", weekly_comment: "deload week" },
     ]);
   });
 
