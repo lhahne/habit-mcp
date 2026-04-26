@@ -10,6 +10,7 @@ import { listHabits } from "../db/habits.js";
 import {
   listAllDaysWithComments,
   listAllDaysWithExercise,
+  listAllDaysWithWeeklyComment,
 } from "../db/days.js";
 import { listAllCheckInsWithNotes } from "../db/check-ins.js";
 import { chunkText } from "./chunker.js";
@@ -35,6 +36,10 @@ export function sourceIdForDayComment(date: string): string {
 
 export function sourceIdForDayExercise(date: string): string {
   return `day:${date}:exercise`;
+}
+
+export function sourceIdForDayWeeklyComment(date: string): string {
+  return `day:${date}:weekly_comment`;
 }
 
 export function sourceIdForCheckInNote(habitId: number, date: string): string {
@@ -88,6 +93,21 @@ export function parseVectorId(id: string): ParsedVectorId | null {
       kind: "day_exercise",
       date: dayExercise[2],
       chunkIndex: Number(dayExercise[3]),
+    };
+  }
+  const dayWeeklyComment = /^(day:(\d{4}-\d{2}-\d{2}):weekly_comment):(\d+)$/.exec(
+    id,
+  );
+  if (
+    dayWeeklyComment?.[1] &&
+    dayWeeklyComment[2] &&
+    dayWeeklyComment[3] !== undefined
+  ) {
+    return {
+      sourceId: dayWeeklyComment[1],
+      kind: "day_weekly_comment",
+      date: dayWeeklyComment[2],
+      chunkIndex: Number(dayWeeklyComment[3]),
     };
   }
   const checkIn = /^(checkin:(\d+):(\d{4}-\d{2}-\d{2}):note):(\d+)$/.exec(id);
@@ -233,6 +253,19 @@ export async function syncDayExercise(
   );
 }
 
+export async function syncDayWeeklyComment(
+  ctx: SyncCtx,
+  date: string,
+  weeklyComment: string | null | undefined,
+): Promise<void> {
+  await syncSource(
+    ctx,
+    sourceIdForDayWeeklyComment(date),
+    weeklyComment,
+    () => ({ kind: "day_weekly_comment", date }),
+  );
+}
+
 export async function syncCheckInNote(
   ctx: SyncCtx,
   habitId: number,
@@ -291,6 +324,13 @@ export async function purgeDayExercise(
   await purgeSource(ctx, sourceIdForDayExercise(date));
 }
 
+export async function purgeDayWeeklyComment(
+  ctx: SyncCtx,
+  date: string,
+): Promise<void> {
+  await purgeSource(ctx, sourceIdForDayWeeklyComment(date));
+}
+
 export async function reindexSource(
   ctx: SyncCtx,
   sourceId: string,
@@ -315,6 +355,7 @@ export interface ReindexTotals {
   habit_descriptions: number;
   day_comments: number;
   day_exercises: number;
+  day_weekly_comments: number;
   check_in_notes: number;
   chunks_upserted: number;
   orphans_removed: number;
@@ -339,6 +380,7 @@ function zeroTotals(): ReindexTotals {
     habit_descriptions: 0,
     day_comments: 0,
     day_exercises: 0,
+    day_weekly_comments: 0,
     check_in_notes: 0,
     chunks_upserted: 0,
     orphans_removed: 0,
@@ -355,6 +397,7 @@ function addTotals(a: ReindexTotals, b: ReindexTotals): ReindexTotals {
     habit_descriptions: a.habit_descriptions + b.habit_descriptions,
     day_comments: a.day_comments + b.day_comments,
     day_exercises: a.day_exercises + b.day_exercises,
+    day_weekly_comments: a.day_weekly_comments + b.day_weekly_comments,
     check_in_notes: a.check_in_notes + b.check_in_notes,
     chunks_upserted: a.chunks_upserted + b.chunks_upserted,
     orphans_removed: a.orphans_removed + b.orphans_removed,
@@ -414,6 +457,7 @@ export function decodeCursor(s: string): ReindexCursor {
     "habit_descriptions",
     "day_comments",
     "day_exercises",
+    "day_weekly_comments",
     "check_in_notes",
     "chunks_upserted",
     "orphans_removed",
@@ -429,12 +473,14 @@ export function decodeCursor(s: string): ReindexCursor {
 }
 
 async function computeTouchedSet(db: D1Database): Promise<Set<string>> {
-  const [habits, dayComments, dayExercises, notes] = await Promise.all([
-    listHabits(db),
-    listAllDaysWithComments(db),
-    listAllDaysWithExercise(db),
-    listAllCheckInsWithNotes(db),
-  ]);
+  const [habits, dayComments, dayExercises, dayWeeklyComments, notes] =
+    await Promise.all([
+      listHabits(db),
+      listAllDaysWithComments(db),
+      listAllDaysWithExercise(db),
+      listAllDaysWithWeeklyComment(db),
+      listAllCheckInsWithNotes(db),
+    ]);
   const s = new Set<string>();
   for (const h of habits) {
     s.add(sourceIdForHabitName(h.id));
@@ -442,6 +488,9 @@ async function computeTouchedSet(db: D1Database): Promise<Set<string>> {
   }
   for (const d of dayComments) s.add(sourceIdForDayComment(d.date));
   for (const d of dayExercises) s.add(sourceIdForDayExercise(d.date));
+  for (const d of dayWeeklyComments) {
+    s.add(sourceIdForDayWeeklyComment(d.date));
+  }
   for (const ci of notes) s.add(sourceIdForCheckInNote(ci.habitId, ci.date));
   return s;
 }
@@ -511,13 +560,19 @@ export async function reindexStep(
   }
 
   if (phase === "days") {
-    const [comments, exercises] = await Promise.all([
+    const [comments, exercises, weeklyComments] = await Promise.all([
       listAllDaysWithComments(ctx.db),
       listAllDaysWithExercise(ctx.db),
+      listAllDaysWithWeeklyComment(ctx.db),
     ]);
     const byDate = new Map<
       string,
-      { date: string; comment?: string; exercise?: string }
+      {
+        date: string;
+        comment?: string;
+        exercise?: string;
+        weeklyComment?: string;
+      }
     >();
     for (const c of comments) {
       byDate.set(c.date, { date: c.date, comment: c.comment });
@@ -526,6 +581,11 @@ export async function reindexStep(
       const existing = byDate.get(e.date);
       if (existing) existing.exercise = e.exercise;
       else byDate.set(e.date, { date: e.date, exercise: e.exercise });
+    }
+    for (const w of weeklyComments) {
+      const existing = byDate.get(w.date);
+      if (existing) existing.weeklyComment = w.weekly_comment;
+      else byDate.set(w.date, { date: w.date, weeklyComment: w.weekly_comment });
     }
     const days = [...byDate.values()].sort((a, b) =>
       a.date.localeCompare(b.date),
@@ -554,6 +614,17 @@ export async function reindexStep(
         }));
         if (n > 0) {
           processed.day_exercises++;
+          processed.chunks_upserted += n;
+        }
+      }
+      if (d.weeklyComment) {
+        const id = sourceIdForDayWeeklyComment(d.date);
+        const n = await reindexSource(ctx, id, d.weeklyComment, () => ({
+          kind: "day_weekly_comment",
+          date: d.date,
+        }));
+        if (n > 0) {
+          processed.day_weekly_comments++;
           processed.chunks_upserted += n;
         }
       }

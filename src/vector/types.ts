@@ -3,6 +3,7 @@ export const KINDS = [
   "habit_description",
   "day_comment",
   "day_exercise",
+  "day_weekly_comment",
   "check_in_note",
 ] as const;
 

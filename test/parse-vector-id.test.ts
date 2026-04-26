@@ -39,6 +39,15 @@ describe("parseVectorId", () => {
     });
   });
 
+  it("parses a day_weekly_comment id", () => {
+    expect(parseVectorId("day:2026-04-23:weekly_comment:2")).toEqual({
+      sourceId: "day:2026-04-23:weekly_comment",
+      kind: "day_weekly_comment",
+      date: "2026-04-23",
+      chunkIndex: 2,
+    });
+  });
+
   it("parses a check_in_note id", () => {
     expect(parseVectorId("checkin:99:2026-12-31:note:5")).toEqual({
       sourceId: "checkin:99:2026-12-31:note",
@@ -73,6 +82,7 @@ describe("parseVectorId", () => {
       "habit:1:description:0",
       "day:2026-04-23:comment:0",
       "day:2026-04-23:exercise:0",
+      "day:2026-04-23:weekly_comment:0",
       "checkin:1:2026-04-23:note:0",
     ];
     for (const id of ids) {
