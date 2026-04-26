@@ -223,7 +223,7 @@ export function buildMcpServer(ctx: McpContext): McpServer {
     {
       title: "List days",
       description:
-        "List every date in [from, to] that has either a day comment or at least one check-in. Each entry contains the date's free-text comment and its check-ins.",
+        "List every date in [from, to] that has any day field set (comment, weight, exercise, or weekly_comment) or at least one check-in. Each entry contains the date's comment, weight, exercise, weekly_comment, and check-ins.",
       inputSchema: { from: DateStr, to: DateStr },
       annotations: { readOnlyHint: true, idempotentHint: true },
     },
@@ -297,7 +297,7 @@ export function buildMcpServer(ctx: McpContext): McpServer {
     {
       title: "Get day",
       description:
-        "Return the day's free-text comment together with all check-ins recorded for that day.",
+        "Return the day's comment, weight, exercise, and weekly_comment together with all check-ins recorded for that day. Missing fields come back as empty strings or null weight.",
       inputSchema: { date: DateStr },
       annotations: { readOnlyHint: true, idempotentHint: true },
     },
